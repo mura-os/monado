@@ -1,0 +1,8 @@
+Fusion AHRS algorithm by Seb Madgwick / x-io Technologies
+https://github.com/xioTechnologies/Fusion
+
+Imported from commit b8c2118 (2024-11-28).
+License: MIT
+
+Only the AHRS core is included (FusionAhrs, FusionMath, FusionConvention).
+FusionBias, FusionCompass, FusionModel, and FusionRemap are not used.

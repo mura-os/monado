@@ -167,6 +167,15 @@ if(XRT_HAVE_TRACY)
 	target_link_libraries(xrt-external-tracy PRIVATE ${CMAKE_DL_LIBS})
 endif()
 
+# xio Fusion AHRS
+add_library(
+	xrt-external-xio-fusion STATIC
+	xio_fusion/FusionAhrs.c
+	)
+target_include_directories(
+	xrt-external-xio-fusion SYSTEM PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/xio_fusion
+	)
+
 # Valve VDF parser
 add_library(xrt-external-vdf INTERFACE)
 target_include_directories(
