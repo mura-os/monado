@@ -15,6 +15,7 @@ set(SHADERS
     blit_ms.comp
     clear.comp
     distortion.comp
+    distortion_nlayer.comp
     layer.comp
     mesh.frag
     mesh.vert

@@ -31,6 +31,13 @@
 #include "util/comp_render.h"
 #include "util/comp_render_helpers.h"
 #include "util/comp_base.h"
+#include "util/u_debug.h"
+
+
+// Force the N-layer fast path off, restoring the old behavior: the
+// 1-projection-layer fast path plus the layer squasher for everything else.
+// Useful for A/B benchmarking and as a safety valve.
+DEBUG_GET_ONCE_BOOL_OPTION(disable_nlayer_fast_path, "XRT_NLAYER_DISABLE", false)
 
 
 /*
@@ -475,7 +482,282 @@ crc_distortion_after_squash(struct render_compute *render, const struct comp_ren
 	}
 }
 
-/// Fast path
+/// N-layer fast path: composites up to effective_nlayer_max projection /
+/// quad / cylinder / equirect2 layers in one compute dispatch directly to the
+/// swapchain, applying per-layer timewarp + distortion for projections and
+/// view-space ray-shape intersection for the other types. Replaces the layer
+/// squasher's view-extent scratch round trip whenever every app layer is one
+/// of these supported types.
+///
+/// Returns true on success. Returns false iff the per-variant pipeline build
+/// failed (cache full or shader compile error) — in that case no command-buffer
+/// state was recorded and the caller can route to the squasher fallback in the
+/// same frame.
+static bool
+crc_nlayer_fast_path(struct render_compute *render,
+                     const struct comp_render_dispatch_data *d,
+                     const struct comp_layer *layers,
+                     uint32_t layer_count)
+{
+	if (d->target.view_count > XRT_MAX_VIEWS) {
+		U_LOG_E("Only supports max %d views!", XRT_MAX_VIEWS);
+		assert(d->target.view_count <= XRT_MAX_VIEWS);
+		return false;
+	}
+	if (layer_count < 1 || layer_count > render->r->compute.distortion_nlayer.effective_nlayer_max) {
+		U_LOG_E("nlayer fast path: layer_count %u out of range [1, %u]", layer_count,
+		        render->r->compute.distortion_nlayer.effective_nlayer_max);
+		assert(layer_count >= 1 && layer_count <= render->r->compute.distortion_nlayer.effective_nlayer_max);
+		return false;
+	}
+
+	const uint32_t view_count = d->target.view_count;
+	VkSampler clamp_to_border_black = render->r->samplers.clamp_to_border_black;
+	VkSampler clamp_to_border_transparent = render->r->samplers.clamp_to_border_transparent;
+	VkSampler clamp_to_edge = render->r->samplers.clamp_to_edge;
+
+	// Per-(layer, view) flat arrays, indexed [layer * view_count + view].
+	VkSampler src_samplers[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+	VkImageView src_image_views[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+	struct xrt_normalized_rect src_norm_rects[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+	struct xrt_pose src_poses[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+	struct xrt_fov src_fovs[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+	struct render_compute_nlayer_quad_data quad_data[RENDER_NLAYER_MAX * XRT_MAX_VIEWS] = {0};
+	struct render_compute_nlayer_wrap_data wrap_data[RENDER_NLAYER_MAX * XRT_MAX_VIEWS] = {0};
+
+	uint32_t unpremultiplied_mask = 0;
+	uint32_t inverted_alpha_mask = 0;
+	uint32_t layer_types = 0;
+	// Packed per-slot eye-hidden mask, 2 bits per slot. Each slot's two bits
+	// are (XRT_LAYER_EYE_VISIBILITY_BOTH XOR layer.visibility), so BOTH
+	// (the common case, and the only value for projection layers per
+	// OpenXR semantics) maps to 0. Spec-const-gated in the shader.
+	uint32_t eye_hidden_mask = 0;
+	uint32_t view_space_slots = 0;
+	uint32_t projection_bounds_test_mask = 0;
+
+	// Per-view view-from-pose matrices. eye_view for view-space layers (HUD-
+	// style, attached to the head), world_view for world-space layers.
+	struct xrt_matrix_4x4 eye_view_mats[XRT_MAX_VIEWS];
+	struct xrt_matrix_4x4 world_view_mats[XRT_MAX_VIEWS];
+	for (uint32_t v = 0; v < view_count; ++v) {
+		math_matrix_4x4_view_from_pose(&d->views[v].eye_pose, &eye_view_mats[v]);
+		math_matrix_4x4_view_from_pose(&d->views[v].world_pose_scanout_begin, &world_view_mats[v]);
+	}
+
+	for (uint32_t l = 0; l < layer_count; ++l) {
+		const struct comp_layer *layer = &layers[l];
+		const struct xrt_layer_data *data = &layer->data;
+
+		// One bit per slot in each mask (see distortion_nlayer.comp).
+		if (is_layer_unpremultiplied(data)) {
+			unpremultiplied_mask |= (1u << l);
+		}
+		if (is_layer_alpha_inverted(data)) {
+			inverted_alpha_mask |= (1u << l);
+		}
+
+		// Per-layer eye-visibility bits, BOTH-XOR polarity so all-visible
+		// keeps the shader spec const at 0 for typical apps.
+		eye_hidden_mask |= nlayer_eye_hidden_bits(data) << (l * 2u);
+
+		// View-space transform: layers with XRT_LAYER_COMPOSITION_VIEW_SPACE_BIT
+		// (HUD-style, attached to the head) use the eye pose; everything else
+		// uses the head/world pose. The slot mask also picks each projection's
+		// timewarp destination and turns off scanout compensation per slot.
+		bool view_space = is_layer_view_space(data);
+		if (view_space) {
+			view_space_slots |= (1u << l);
+		}
+		const struct xrt_matrix_4x4 *view_mats = view_space ? eye_view_mats : world_view_mats;
+
+		if (data->type == XRT_LAYER_QUAD) {
+			layer_types |= ((uint32_t)RENDER_NLAYER_TYPE_QUAD << (l * RENDER_NLAYER_TYPE_BITS));
+
+			const struct xrt_layer_quad_data *q = &data->quad;
+			const uint32_t array_index = q->sub.array_index;
+			const struct comp_swapchain_image *image =
+			    get_layer_image(layer, 0, q->sub.image_index);
+			VkImageView image_view = get_image_view(image, data->flags, array_index);
+
+			struct xrt_normalized_rect rect = XRT_STRUCT_INIT;
+			set_post_transform_rect(data, &q->sub.norm_rect, true, &rect);
+
+			for (uint32_t v = 0; v < view_count; ++v) {
+				uint32_t i = l * view_count + v;
+				src_samplers[i] = clamp_to_edge;
+				src_image_views[i] = image_view;
+				src_norm_rects[i] = rect;
+				// src_poses/src_fovs unused for quad slots; leave
+				// at default for repeatability.
+				src_poses[i] = (struct xrt_pose)XRT_POSE_IDENTITY;
+				src_fovs[i] = (struct xrt_fov){0};
+				fill_nlayer_quad_data(data, &view_mats[v], &quad_data[i]);
+			}
+			continue;
+		}
+
+		if (data->type == XRT_LAYER_CYLINDER || data->type == XRT_LAYER_EQUIRECT2) {
+			const uint32_t type_code = (data->type == XRT_LAYER_CYLINDER)
+			                               ? (uint32_t)RENDER_NLAYER_TYPE_CYLINDER
+			                               : (uint32_t)RENDER_NLAYER_TYPE_EQUIRECT2;
+			layer_types |= (type_code << (l * RENDER_NLAYER_TYPE_BITS));
+
+			// Both types: 1 source image, view-invariant array_index, same
+			// sampler/post-transform-rect treatment as do_cs_*_layer.
+			const struct xrt_layer_data *ld = data;
+			uint32_t array_index;
+			uint32_t image_index;
+			const struct xrt_normalized_rect *src_rect;
+			if (data->type == XRT_LAYER_CYLINDER) {
+				array_index = ld->cylinder.sub.array_index;
+				image_index = ld->cylinder.sub.image_index;
+				src_rect = &ld->cylinder.sub.norm_rect;
+			} else {
+				array_index = ld->equirect2.sub.array_index;
+				image_index = ld->equirect2.sub.image_index;
+				src_rect = &ld->equirect2.sub.norm_rect;
+			}
+			const struct comp_swapchain_image *image =
+			    get_layer_image(layer, 0, image_index);
+			VkImageView image_view = get_image_view(image, data->flags, array_index);
+
+			struct xrt_normalized_rect rect = XRT_STRUCT_INIT;
+			set_post_transform_rect(data, src_rect, false, &rect);
+
+			for (uint32_t v = 0; v < view_count; ++v) {
+				uint32_t i = l * view_count + v;
+				src_samplers[i] = clamp_to_edge;
+				src_image_views[i] = image_view;
+				src_norm_rects[i] = rect;
+				src_poses[i] = (struct xrt_pose)XRT_POSE_IDENTITY;
+				src_fovs[i] = (struct xrt_fov){0};
+				if (data->type == XRT_LAYER_CYLINDER) {
+					fill_nlayer_cylinder_data(data, &view_mats[v], &wrap_data[i]);
+				} else {
+					fill_nlayer_equirect2_data(data, &view_mats[v], &wrap_data[i]);
+				}
+			}
+			continue;
+		}
+
+		const struct xrt_layer_projection_view_data *vds[XRT_MAX_VIEWS];
+		if (data->type == XRT_LAYER_PROJECTION) {
+			const struct xrt_layer_projection_data *proj = &data->proj;
+			for (uint32_t v = 0; v < view_count; ++v) {
+				vds[v] = &proj->v[v];
+			}
+		} else if (data->type == XRT_LAYER_PROJECTION_DEPTH) {
+			const struct xrt_layer_projection_depth_data *depth = &data->depth;
+			for (uint32_t v = 0; v < view_count; ++v) {
+				vds[v] = &depth->v[v];
+			}
+		} else {
+			U_LOG_E("nlayer fast path: layer %u type %u not supported", l,
+			        (uint32_t)data->type);
+			assert(false);
+			return false;
+		}
+
+		// The bounds test can be skipped when border sampling already
+		// does the right thing outside the FOV. The rect must cover the
+		// whole image, so that out of FOV means out of image. Then one
+		// of three cases: plain source alpha keeps the transparent
+		// border transparent; the bottom slot doesn't care since black
+		// and transparent are the same over an empty accumulator; a
+		// display-covering FOV wants the classic black pull-in anyway.
+		// An alpha-less swapchain format disqualifies the source-alpha
+		// case: missing alpha substitutes to one, border texels
+		// included.
+		bool alpha_safe = ((inverted_alpha_mask >> l) & 1u) == 0u &&
+		                  (data->flags & XRT_LAYER_COMPOSITION_BLEND_TEXTURE_SOURCE_ALPHA_BIT) != 0;
+		bool full_image = true;
+		bool covers_display = true;
+		for (uint32_t v = 0; v < view_count; ++v) {
+			uint32_t i = l * view_count + v;
+			uint32_t array_index = vds[v]->sub.array_index;
+			const struct comp_swapchain_image *image =
+			    get_layer_image(layer, v, vds[v]->sub.image_index);
+
+			const struct comp_swapchain *csc =
+			    (struct comp_swapchain *)comp_layer_get_swapchain(layer, v);
+			if (!comp_swapchain_format_has_alpha(csc)) {
+				alpha_safe = false;
+			}
+
+			struct xrt_normalized_rect rect = vds[v]->sub.norm_rect;
+			if (rect.x != 0.0f || rect.y != 0.0f || rect.w != 1.0f || rect.h != 1.0f) {
+				full_image = false;
+			}
+
+			if (!fov_covers(&vds[v]->fov, &d->views[v].fov)) {
+				covers_display = false;
+			}
+			if (data->flip_y) {
+				rect.y += rect.h;
+				rect.h = -rect.h;
+			}
+
+			src_samplers[i] = clamp_to_border_transparent;
+			src_image_views[i] = get_image_view(image, data->flags, array_index);
+			src_norm_rects[i] = rect;
+			src_poses[i] = vds[v]->pose;
+			src_fovs[i] = vds[v]->fov;
+		}
+		if (full_image && covers_display && alpha_safe) {
+			// Black pull-in for a source-alpha display-covering layer.
+			for (uint32_t v = 0; v < view_count; ++v) {
+				src_samplers[l * view_count + v] = clamp_to_border_black;
+			}
+		}
+		if (!full_image || (l > 0 && !alpha_safe && !covers_display)) {
+			projection_bounds_test_mask |= 1u << l;
+		}
+	}
+
+	// Per-view scanout and eye poses are shared across all layers (one
+	// observer pose per view, not one per layer).
+	struct xrt_pose world_poses_scanout_begin[XRT_MAX_VIEWS];
+	struct xrt_pose world_poses_scanout_end[XRT_MAX_VIEWS];
+	struct xrt_pose eye_poses[XRT_MAX_VIEWS];
+	struct render_viewport_data target_viewport_datas[XRT_MAX_VIEWS];
+	for (uint32_t v = 0; v < view_count; ++v) {
+		world_poses_scanout_begin[v] = d->views[v].world_pose_scanout_begin;
+		world_poses_scanout_end[v] = d->views[v].world_pose_scanout_end;
+		eye_poses[v] = d->views[v].eye_pose;
+		target_viewport_datas[v] = d->views[v].target.viewport_data;
+	}
+
+	return render_compute_projection_nlayer_timewarp( //
+	    render,                                       //
+	    layer_count,                                  //
+	    layer_types,                                  //
+	    view_space_slots,                             //
+	    src_samplers,                                 //
+	    src_image_views,                              //
+	    src_norm_rects,                               //
+	    src_poses,                                    //
+	    src_fovs,                                     //
+	    quad_data,                                    //
+	    wrap_data,                                    //
+	    world_poses_scanout_begin,                    //
+	    world_poses_scanout_end,                      //
+	    eye_poses,                                    //
+	    unpremultiplied_mask,                         //
+	    inverted_alpha_mask,                          //
+	    eye_hidden_mask,                              //
+	    projection_bounds_test_mask,                  //
+	    d->target.cs.image,                           //
+	    d->target.cs.storage_view,                    //
+	    target_viewport_datas,                        //
+	    d->do_timewarp,                               //
+	    d->do_distortion,                             //
+	    d->do_cac,                                    //
+	    d->scanout_direction);                        //
+}
+
+/// 1-projection-layer fast path: distortion + timewarp in one dispatch, no
+/// compositing (single source). Equivalent to the N-layer fast path at N=1.
 static void
 crc_distortion_fast_path(struct render_compute *render,
                          const struct comp_render_dispatch_data *d,
@@ -836,11 +1118,26 @@ comp_render_cs_dispatch(struct render_compute *render,
 	// Consistency check.
 	assert(!fast_path || layer_count >= 1);
 
+	// The N-layer fast path serves all N >= 1. Eligibility: bounded
+	// layer_count, every layer is a type the shader implements (projection /
+	// quad / cylinder / equirect2). The compositor's existing fast_path
+	// check already filters out chroma key, color bias/scale and similar
+	// features.
+	bool nlayer_enabled = !debug_get_bool_option_disable_nlayer_fast_path();
+	bool use_nlayer = nlayer_enabled &&                                                           //
+	                  fast_path &&                                                                //
+	                  layer_count >= 1 &&                                                         //
+	                  layer_count <= render->r->compute.distortion_nlayer.effective_nlayer_max && //
+	                  all_layers_are_nlayer_eligible(layers, layer_count);                        //
+
 	// We want to read from the images afterwards.
 	VkImageLayout transition_to = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-	if (fast_path && layer->data.type == XRT_LAYER_PROJECTION) {
-		// Fast path.
+	if (use_nlayer && crc_nlayer_fast_path(render, d, layers, layer_count)) {
+		// Fast path, done.
+
+	} else if (!nlayer_enabled && fast_path && layer_count == 1 && layer->data.type == XRT_LAYER_PROJECTION) {
+		// Existing 1-projection-layer fast path.
 		const struct xrt_layer_projection_data *proj = &layer->data.proj;
 		const struct xrt_layer_projection_view_data *vds[XRT_MAX_VIEWS];
 		for (uint32_t view = 0; view < d->target.view_count; ++view) {
@@ -852,8 +1149,9 @@ comp_render_cs_dispatch(struct render_compute *render,
 		    layer,                //
 		    vds);                 //
 
-	} else if (fast_path && layer->data.type == XRT_LAYER_PROJECTION_DEPTH) {
-		// Fast path.
+	} else if (!nlayer_enabled && fast_path && layer_count == 1 &&
+	           layer->data.type == XRT_LAYER_PROJECTION_DEPTH) {
+		// Existing 1-projection-layer fast path (depth variant).
 		const struct xrt_layer_projection_depth_data *depth = &layer->data.depth;
 		const struct xrt_layer_projection_view_data *vds[XRT_MAX_VIEWS];
 		for (uint32_t view = 0; view < d->target.view_count; ++view) {
@@ -866,9 +1164,8 @@ comp_render_cs_dispatch(struct render_compute *render,
 		    vds);                 //
 
 	} else if (layer_count > 0) {
-		// Compute layer squasher
-		if (fast_path) {
-			U_LOG_W("Wanted fast path but no projection layer, falling back to layer squasher.");
+		if (use_nlayer) {
+			U_LOG_W("nlayer fast path pipeline build failed; falling back to layer squasher.");
 		}
 
 		/*

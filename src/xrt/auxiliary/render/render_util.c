@@ -172,6 +172,38 @@ render_calc_time_warp_matrix(const struct xrt_pose *src_pose,
 	}
 }
 
+// With u = rect.w * (0.5 * x / w + 0.5) + rect.x the new rows are
+// row_x' = 0.5 * rect.w * row_x + (0.5 * rect.w + rect.x) * row_w, same for
+// y. Column-major, matching GLSL mat4.
+void
+render_time_warp_matrix_fold_remap_and_rect(struct xrt_matrix_4x4 *matrix, const struct xrt_normalized_rect *rect)
+{
+	for (uint32_t col = 0; col < 4; col++) {
+		float x = matrix->v[col * 4 + 0];
+		float y = matrix->v[col * 4 + 1];
+		float w = matrix->v[col * 4 + 3];
+		matrix->v[col * 4 + 0] = rect->w * (0.5f * x + 0.5f * w) + rect->x * w;
+		matrix->v[col * 4 + 1] = rect->h * (0.5f * y + 0.5f * w) + rect->y * w;
+	}
+}
+
+// Solving |uv * scale + bias| <= 1 with equality at uv = rect.x and
+// uv = rect.x + rect.w (same for y/h) gives scale = 2 / extent and
+// bias = -(2 * offset + extent) / extent.
+void
+render_calc_proj_bounds_transform(const struct xrt_normalized_rect *rect, struct xrt_normalized_rect *out_transform)
+{
+	if (rect->w == 0.0f || rect->h == 0.0f) {
+		// Degenerate rect: every UV tests outside.
+		*out_transform = (struct xrt_normalized_rect){.x = 2.0f, .y = 2.0f, .w = 0.0f, .h = 0.0f};
+		return;
+	}
+	out_transform->x = -(2.0f * rect->x + rect->w) / rect->w;
+	out_transform->y = -(2.0f * rect->y + rect->h) / rect->h;
+	out_transform->w = 2.0f / rect->w;
+	out_transform->h = 2.0f / rect->h;
+}
+
 void
 render_calc_time_warp_projection(const struct xrt_fov *fov, struct xrt_matrix_4x4 *result)
 {

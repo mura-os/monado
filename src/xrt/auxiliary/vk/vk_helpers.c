@@ -661,6 +661,15 @@ vk_get_native_handle_from_device_memory(struct vk_bundle *vk,
 VkResult
 vk_create_sampler(struct vk_bundle *vk, VkSamplerAddressMode clamp_mode, VkSampler *out_sampler)
 {
+	return vk_create_sampler_border(vk, clamp_mode, VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK, out_sampler);
+}
+
+VkResult
+vk_create_sampler_border(struct vk_bundle *vk,
+                         VkSamplerAddressMode clamp_mode,
+                         VkBorderColor border_color,
+                         VkSampler *out_sampler)
+{
 	VkSampler sampler;
 	VkResult ret;
 
@@ -672,7 +681,7 @@ vk_create_sampler(struct vk_bundle *vk, VkSamplerAddressMode clamp_mode, VkSampl
 	    .addressModeU = clamp_mode,
 	    .addressModeV = clamp_mode,
 	    .addressModeW = clamp_mode,
-	    .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK,
+	    .borderColor = border_color,
 	    .unnormalizedCoordinates = VK_FALSE,
 	};
 

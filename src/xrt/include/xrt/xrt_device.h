@@ -191,6 +191,12 @@ struct xrt_hmd_parts
 		//! Preferred disortion model, single value.
 		enum xrt_distortion_model preferred;
 
+		/*!
+		 * Disable chromatic aberration correction: use the geometric distortion
+		 * channel for all color channels.
+		 */
+		bool no_chromatic_aberration_correction;
+
 		struct
 		{
 			//! Data.
@@ -199,7 +205,7 @@ struct xrt_hmd_parts
 			uint32_t vertex_count;
 			//! Stride of vertices
 			uint32_t stride;
-			//! 1 or 3 for (chromatic aberration).
+			//! Number of UV channels stored per mesh vertex.
 			uint32_t uv_channels_count;
 
 			//! Indices, for triangle strip.
@@ -683,6 +689,9 @@ struct xrt_device
 	 * @param u               horizontal texture coordinate
 	 * @param v               vertical texture coordinate
 	 * @param[out] out_result corresponding u,v pairs for all three color channels.
+	 *                         When chromatic aberration correction is disabled,
+	 *                         the green channel is used as the geometric
+	 *                         distortion reference.
 	 */
 	xrt_result_t (*compute_distortion)(
 	    struct xrt_device *xdev, uint32_t view, float u, float v, struct xrt_uv_triplet *out_result);

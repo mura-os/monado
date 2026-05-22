@@ -158,6 +158,9 @@ struct comp_compositor
 
 		//! Should the fast path be disabled.
 		bool disable_fast_path;
+
+		//! Temporarily disable chromatic aberration correction.
+		bool cac_off;
 	} debug;
 
 	/*!

@@ -67,6 +67,8 @@ chl_frame_state_init(struct chl_frame_state *frame_state,
                      struct render_resources *rr,
                      uint32_t view_count,
                      bool do_timewarp,
+                     bool do_distortion,
+                     bool do_cac,
                      bool fast_path,
                      struct chl_scratch *scratch);
 

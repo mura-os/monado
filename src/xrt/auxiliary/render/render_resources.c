@@ -292,6 +292,131 @@ create_compute_distortion_descriptor_set_layout(struct vk_bundle *vk,
 	return VK_SUCCESS;
 }
 
+struct compute_distortion_nlayer_params
+{
+	uint32_t distortion_texel_count;
+	// Bit i set = projection slot i bounds-tests its source UVs.
+	uint32_t projection_bounds_test_mask; // id 1
+	int32_t view_count;
+	VkBool32 do_distortion;
+	int32_t layer_count;
+	// Mirrors enum xrt_scanout_direction; the shader treats it as int.
+	int32_t scanout_direction;
+	// Packed per-slot type, 2 bits per slot. Mirrors `layer_types` (id 6).
+	uint32_t layer_types;
+	// Per-slot unpremultiplied-alpha bitmap, 1 bit/slot. Mirrors `layer_unpremult_mask` (id 7).
+	uint32_t layer_unpremult_mask;
+	// Per-slot inverted-alpha bitmap, 1 bit/slot. Mirrors `layer_inverted_alpha_mask` (id 8).
+	uint32_t layer_inverted_alpha_mask;
+	// Packed per-slot eye-hidden bitmap, 2 bits per slot. Mirrors
+	// `eye_hidden_mask` (id 9). Encoded as (XRT_LAYER_EYE_VISIBILITY_BOTH
+	// XOR visibility) so all-BOTH (the default + projection slots) is 0.
+	uint32_t eye_hidden_mask;
+	VkBool32 do_cac;
+	// Bit i set = slot i gets no scanout compensation.
+	uint32_t scanout_compensate_layers_mask; // id 12
+};
+
+XRT_CHECK_RESULT static VkResult
+create_compute_distortion_nlayer_pipeline(struct vk_bundle *vk,
+                                          VkPipelineCache pipeline_cache,
+                                          VkShaderModule shader,
+                                          VkPipelineLayout pipeline_layout,
+                                          const struct compute_distortion_nlayer_params *params,
+                                          VkPipeline *out_compute_pipeline)
+{
+#define ENTRY(ID, FIELD)                                                                                               \
+	{                                                                                                              \
+	    .constantID = ID,                                                                                          \
+	    .offset = offsetof(struct compute_distortion_nlayer_params, FIELD),                                        \
+	    sizeof(params->FIELD),                                                                                     \
+	}
+
+	VkSpecializationMapEntry entries[12] = {
+	    ENTRY(0, distortion_texel_count),
+	    ENTRY(1, projection_bounds_test_mask),
+	    ENTRY(2, view_count),
+	    ENTRY(3, do_distortion),
+	    ENTRY(4, layer_count),
+	    ENTRY(5, scanout_direction),
+	    ENTRY(6, layer_types),
+	    ENTRY(7, layer_unpremult_mask),
+	    ENTRY(8, layer_inverted_alpha_mask),
+	    ENTRY(9, eye_hidden_mask),
+	    ENTRY(10, do_cac),
+	    ENTRY(12, scanout_compensate_layers_mask),
+	};
+#undef ENTRY
+
+	VkSpecializationInfo specialization_info = {
+	    .mapEntryCount = ARRAY_SIZE(entries),
+	    .pMapEntries = entries,
+	    .dataSize = sizeof(*params),
+	    .pData = params,
+	};
+
+	return vk_create_compute_pipeline( //
+	    vk,                            // vk_bundle
+	    pipeline_cache,                // pipeline_cache
+	    shader,                        // shader
+	    pipeline_layout,               // pipeline_layout
+	    &specialization_info,          // specialization_info
+	    out_compute_pipeline);         // out_compute_pipeline
+}
+
+XRT_CHECK_RESULT static VkResult
+create_compute_distortion_nlayer_descriptor_set_layout(struct vk_bundle *vk,
+                                                       uint32_t layer_count,
+                                                       uint32_t view_count,
+                                                       VkDescriptorSetLayout *out_descriptor_set_layout)
+{
+	VkResult ret;
+
+	// Binding 0 (sources) is sized exactly to the slots the matching pipeline
+	// variant's shader declares (`sources[layer_count * view_count]`). One
+	// layout per layer_count value means each layout's descriptorCount equals
+	// the shader's array size — descriptor writes never touch unused slots.
+	VkDescriptorSetLayoutBinding bindings[4] = {
+	    {
+	        .binding = 0,
+	        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	        .descriptorCount = layer_count * view_count,
+	        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+	    },
+	    {
+	        .binding = 1,
+	        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	        .descriptorCount = 3 * view_count,
+	        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+	    },
+	    {
+	        .binding = 2,
+	        .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	        .descriptorCount = 1,
+	        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+	    },
+	    {
+	        .binding = 3,
+	        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+	        .descriptorCount = 1,
+	        .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
+	    },
+	};
+
+	VkDescriptorSetLayoutCreateInfo set_layout_info = {
+	    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+	    .bindingCount = ARRAY_SIZE(bindings),
+	    .pBindings = bindings,
+	};
+
+	VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+	ret = vk->vkCreateDescriptorSetLayout(vk->device, &set_layout_info, NULL, &layout);
+	VK_CHK_AND_RET(ret, "vkCreateDescriptorSetLayout");
+
+	*out_descriptor_set_layout = layout;
+	return VK_SUCCESS;
+}
+
 /*
  *
  * Mock image.
@@ -496,6 +621,16 @@ render_resources_init(struct render_resources *r,
 	VK_CHK_WITH_RET(ret, "vk_create_sampler", false);
 
 	VK_NAME_SAMPLER(vk, r->samplers.clamp_to_border_black, "render_resources sampler clamp_to_border_black");
+
+	ret = vk_create_sampler_border(                  //
+	    vk,                                          // vk_bundle
+	    VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,     // clamp_mode
+	    VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,     // border_color
+	    &r->samplers.clamp_to_border_transparent);   // out_sampler
+	VK_CHK_WITH_RET(ret, "vk_create_sampler_border", false);
+
+	VK_NAME_SAMPLER(vk, r->samplers.clamp_to_border_transparent,
+	                "render_resources sampler clamp_to_border_transparent");
 
 
 	/*
@@ -935,6 +1070,120 @@ render_resources_init(struct render_resources *r,
 
 
 	/*
+	 * N-layer fast path resources. The shader handles projection / quad /
+	 * cylinder / equirect2 layers in one dispatch; pipelines are lazy-built
+	 * per (N, layer_types, masks, do_timewarp, do_distortion, do_cac, scanout_direction)
+	 * variant. The per-N descriptor set layouts / pipeline layouts /
+	 * descriptor sets are pre-allocated below, up to effective_nlayer_max.
+	 */
+
+	// Cap the path to whatever the device can actually host. Each pipeline
+	// variant binds `N * view_count + 3 * view_count` combined image samplers
+	// on the compute stage; the smaller of the per-stage sampler and sampled-
+	// image limits gates this. Variants with N above the effective max are
+	// rejected by the eligibility check and fall through to the squasher.
+	{
+		uint32_t per_stage_budget = MIN(vk->limits.max_per_stage_descriptor_samplers,
+		                                vk->limits.max_per_stage_descriptor_sampled_images);
+		uint32_t distortion_cost = 3 * r->view_count;
+		uint32_t source_budget = (per_stage_budget > distortion_cost) ? (per_stage_budget - distortion_cost) : 0;
+		uint32_t budget_n = source_budget / r->view_count;
+		r->compute.distortion_nlayer.effective_nlayer_max = MIN((uint32_t)RENDER_NLAYER_MAX, budget_n);
+
+		U_LOG_I("nlayer fast path: effective max N = %u (compile cap %u, device per-stage budget %u, "
+		        "view_count %u)",
+		        r->compute.distortion_nlayer.effective_nlayer_max, (uint32_t)RENDER_NLAYER_MAX,
+		        per_stage_budget, r->view_count);
+	}
+
+	const uint32_t effective_max = r->compute.distortion_nlayer.effective_nlayer_max;
+
+	// Per-N descriptor set layouts + pipeline layouts. Index [N-1] holds the
+	// trio for a `layer_count == N` pipeline variant. Only the
+	// effective_nlayer_max entries are created; the rest stay VK_NULL_HANDLE
+	// and are never indexed because eligibility gates layer_count against
+	// effective_max before any dispatch.
+	for (uint32_t i = 0; i < effective_max; ++i) {
+		uint32_t layer_count = i + 1;
+		ret = create_compute_distortion_nlayer_descriptor_set_layout( //
+		    vk,                                                       //
+		    layer_count,                                              //
+		    r->view_count,                                            //
+		    &r->compute.distortion_nlayer.descriptor_set_layouts[i]); //
+		VK_CHK_WITH_RET(ret, "create_compute_distortion_nlayer_descriptor_set_layout", false);
+
+		VK_NAME_DESCRIPTOR_SET_LAYOUT(vk, r->compute.distortion_nlayer.descriptor_set_layouts[i],
+		                              "render_resources compute distortion nlayer descriptor set layout");
+
+		ret = vk_create_pipeline_layout(                            //
+		    vk,                                                     // vk_bundle
+		    r->compute.distortion_nlayer.descriptor_set_layouts[i], // descriptor_set_layout
+		    &r->compute.distortion_nlayer.pipeline_layouts[i]);     // out_pipeline_layout
+		VK_CHK_WITH_RET(ret, "vk_create_pipeline_layout", false);
+
+		VK_NAME_PIPELINE_LAYOUT(vk, r->compute.distortion_nlayer.pipeline_layouts[i],
+		                        "render_resources compute distortion nlayer pipeline layout");
+	}
+
+	if (effective_max > 0) {
+		// Single pool sized to hold effective_max sets. The helper multiplies
+		// per-descriptor counts by descriptor_count, so we use the largest
+		// per-set value (N=effective_max) — the pool over-allocates by a small
+		// constant for smaller-N sets, which is fine.
+		struct vk_descriptor_pool_info nlayer_pool_info = {
+		    .uniform_per_descriptor_count = 1,
+		    .sampler_per_descriptor_count = (effective_max * r->view_count) + (3 * r->view_count),
+		    .storage_image_per_descriptor_count = 1,
+		    .storage_buffer_per_descriptor_count = 0,
+		    .descriptor_count = effective_max,
+		    .freeable = false,
+		};
+
+		ret = vk_create_descriptor_pool(                    //
+		    vk,                                             // vk_bundle
+		    &nlayer_pool_info,                              // info
+		    &r->compute.distortion_nlayer.descriptor_pool); // out_descriptor_pool
+		VK_CHK_WITH_RET(ret, "vk_create_descriptor_pool", false);
+
+		VK_NAME_DESCRIPTOR_POOL(vk, r->compute.distortion_nlayer.descriptor_pool,
+		                        "render_resources compute distortion nlayer descriptor pool");
+
+		// Allocate one descriptor set per layout. Vulkan permits a single
+		// VkDescriptorSetAllocateInfo to allocate multiple sets from different
+		// layouts in one call.
+		VkDescriptorSetAllocateInfo alloc_info = {
+		    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		    .descriptorPool = r->compute.distortion_nlayer.descriptor_pool,
+		    .descriptorSetCount = effective_max,
+		    .pSetLayouts = r->compute.distortion_nlayer.descriptor_set_layouts,
+		};
+
+		ret = vk->vkAllocateDescriptorSets(vk->device, &alloc_info,
+		                                   r->compute.distortion_nlayer.descriptor_sets);
+		VK_CHK_WITH_RET(ret, "vkAllocateDescriptorSets", false);
+	}
+
+	size_t nlayer_ubo_size = sizeof(struct render_compute_distortion_nlayer_ubo_data);
+
+	ret = render_buffer_init(              //
+	    vk,                                // vk_bundle
+	    &r->compute.distortion_nlayer.ubo, // buffer
+	    ubo_usage_flags,                   // usage_flags
+	    memory_property_flags,             // memory_property_flags
+	    nlayer_ubo_size);                  // size
+	VK_CHK_WITH_RET(ret, "render_buffer_init", false);
+	VK_NAME_BUFFER(vk, r->compute.distortion_nlayer.ubo.buffer,
+	               "render_resources compute distortion nlayer ubo");
+	ret = render_buffer_map(                //
+	    vk,                                 // vk_bundle
+	    &r->compute.distortion_nlayer.ubo); // buffer
+	VK_CHK_WITH_RET(ret, "render_buffer_map", false);
+
+	// Pipelines are built lazily by render_resources_get_or_create_nlayer_pipeline;
+	// no need to memset — render_resources_init's caller zeroes the struct.
+
+
+	/*
 	 * Clear pipeline.
 	 */
 
@@ -1025,6 +1274,7 @@ render_resources_fini(struct render_resources *r)
 	D(Sampler, r->samplers.repeat);
 	D(Sampler, r->samplers.clamp_to_edge);
 	D(Sampler, r->samplers.clamp_to_border_black);
+	D(Sampler, r->samplers.clamp_to_border_transparent);
 
 	D(ImageView, r->mock.color.image_view);
 	D(Image, r->mock.color.image);
@@ -1064,6 +1314,17 @@ render_resources_fini(struct render_resources *r)
 	}
 	D(PipelineLayout, r->compute.distortion.pipeline_layout);
 
+	for (uint32_t i = 0; i < r->compute.distortion_nlayer.pipeline_count; ++i) {
+		D(Pipeline, r->compute.distortion_nlayer.pipelines[i].pipeline);
+	}
+	r->compute.distortion_nlayer.pipeline_count = 0;
+	D(DescriptorPool, r->compute.distortion_nlayer.descriptor_pool);
+	for (uint32_t i = 0; i < r->compute.distortion_nlayer.effective_nlayer_max; ++i) {
+		D(DescriptorSetLayout, r->compute.distortion_nlayer.descriptor_set_layouts[i]);
+		D(PipelineLayout, r->compute.distortion_nlayer.pipeline_layouts[i]);
+	}
+	render_buffer_fini(vk, &r->compute.distortion_nlayer.ubo);
+
 	D(Pipeline, r->compute.clear.pipeline);
 
 	render_distortion_images_fini(r);
@@ -1078,6 +1339,163 @@ render_resources_fini(struct render_resources *r)
 
 	// Finally forget about the vk bundle. We do not own it!
 	r->vk = NULL;
+}
+
+// Pack the variant key for linear-search lookup. The scanout mask does not
+// fit one uint64 anymore, so the key is two words; bit 1 of the first word
+// is unused:
+//   lo[0]      do_distortion       (1 bit)
+//   lo[2..4]   scanout_direction   (3 bits, values 0..4)
+//   lo[5..8]   layer_count         (4 bits, values 0..8)
+//   lo[9..24]  layer_types         (16 bits, 2 bits/slot * 8 slots)
+//   lo[25..32] unpremult_mask      (8 bits, 1 bit/slot * 8 slots)
+//   lo[33..40] inverted_alpha_mask (8 bits, 1 bit/slot * 8 slots)
+//   lo[41..56] eye_hidden_mask     (16 bits, 2 bits/slot * 8 slots)
+//   lo[57]     do_cac              (1 bit; ignored when do_distortion == false)
+//   hi[0..7]   scanout_compensate_layers_mask (8 bits, 1 bit/slot * 8 slots)
+//   hi[8..15]  projection_bounds_test_mask    (8 bits, 1 bit/slot * 8 slots)
+// The 2-bit/slot fields cap this layout at RENDER_NLAYER_MAX==8. Inputs
+// must already be canonicalized by the getter.
+static inline void
+nlayer_pipeline_key(uint32_t layer_count,
+                    uint32_t layer_types,
+                    uint32_t unpremult_mask,
+                    uint32_t inverted_alpha_mask,
+                    uint32_t eye_hidden_mask,
+                    uint32_t scanout_compensate_layers_mask,
+                    uint32_t projection_bounds_test_mask,
+                    bool do_distortion,
+                    bool do_cac,
+                    enum xrt_scanout_direction scanout_direction,
+                    uint64_t out_key[2])
+{
+	do_cac = do_distortion && do_cac;
+
+	out_key[0] = ((uint64_t)(do_cac ? 1u : 0u) << 57) |  //
+	             ((uint64_t)eye_hidden_mask << 41) |     //
+	             ((uint64_t)inverted_alpha_mask << 33) | //
+	             ((uint64_t)unpremult_mask << 25) |      //
+	             ((uint64_t)layer_types << 9) |          //
+	             ((uint64_t)layer_count << 5) |          //
+	             ((uint64_t)scanout_direction << 2) |    //
+	             ((uint64_t)(do_distortion ? 1u : 0u));  //
+	out_key[1] = ((uint64_t)projection_bounds_test_mask << 8) | //
+	             ((uint64_t)scanout_compensate_layers_mask);    //
+}
+
+VkResult
+render_resources_get_or_create_nlayer_pipeline(struct render_resources *r,
+                                               uint32_t layer_count,
+                                               uint32_t layer_types,
+                                               uint32_t unpremult_mask,
+                                               uint32_t inverted_alpha_mask,
+                                               uint32_t eye_hidden_mask,
+                                               uint32_t scanout_compensate_layers_mask,
+                                               uint32_t projection_bounds_test_mask,
+                                               bool do_distortion,
+                                               bool do_cac,
+                                               enum xrt_scanout_direction scanout_direction,
+                                               VkPipeline *out_pipeline)
+{
+	if (layer_count < 1 || layer_count > r->compute.distortion_nlayer.effective_nlayer_max) {
+		U_LOG_E("nlayer pipeline: layer_count %u out of range [1, %u]", layer_count,
+		        r->compute.distortion_nlayer.effective_nlayer_max);
+		return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+	}
+	if ((uint32_t)scanout_direction >= 5) {
+		U_LOG_E("nlayer pipeline: scanout_direction %d out of range [0, 4]", (int)scanout_direction);
+		return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+	}
+	// Mask off any bits the shader can't see (slots >= layer_count). Keeps
+	// the cache key tight: callers passing different garbage in unused bits
+	// would otherwise produce two pipeline variants for the same effective
+	// specialisation. layer_types/eye_hidden are 2 bits per slot; the two alpha
+	// masks are 1 bit per slot.
+	const uint32_t type_used_bits = layer_count * RENDER_NLAYER_TYPE_BITS;
+	const uint32_t type_used_mask = (type_used_bits >= 32) ? 0xFFFFFFFFu : ((1u << type_used_bits) - 1u);
+	layer_types &= type_used_mask;
+	eye_hidden_mask &= type_used_mask; // same 2-bits-per-slot width as layer_types
+	const uint32_t slot_used_mask = (layer_count >= 32) ? 0xFFFFFFFFu : ((1u << layer_count) - 1u);
+	unpremult_mask &= slot_used_mask;
+	inverted_alpha_mask &= slot_used_mask;
+
+	// Only projection slots consume the mask; dead bits must not fork variants.
+	uint32_t proj_slots = 0;
+	for (uint32_t i = 0; i < layer_count; i++) {
+		uint32_t slot_type = (layer_types >> (i * RENDER_NLAYER_TYPE_BITS)) & 3u;
+		if (slot_type == (uint32_t)RENDER_NLAYER_TYPE_PROJECTION) {
+			proj_slots |= 1u << i;
+		}
+	}
+	projection_bounds_test_mask &= proj_slots;
+
+	// Mask canonicalization: a global-flash display compensates nothing,
+	// and a variant compensating nothing is a global-flash variant.
+	scanout_compensate_layers_mask &= slot_used_mask;
+	if (scanout_direction == XRT_SCANOUT_DIRECTION_NONE) {
+		scanout_compensate_layers_mask = slot_used_mask;
+	}
+	if (scanout_compensate_layers_mask == slot_used_mask) {
+		scanout_direction = XRT_SCANOUT_DIRECTION_NONE;
+	}
+
+	do_cac = do_distortion && do_cac;
+
+	uint64_t key[2];
+	nlayer_pipeline_key(layer_count, layer_types, unpremult_mask, inverted_alpha_mask, eye_hidden_mask,
+	                    scanout_compensate_layers_mask, projection_bounds_test_mask, do_distortion, do_cac,
+	                    scanout_direction, key);
+
+	for (uint32_t i = 0; i < r->compute.distortion_nlayer.pipeline_count; ++i) {
+		if (r->compute.distortion_nlayer.pipelines[i].key[0] == key[0] &&
+		    r->compute.distortion_nlayer.pipelines[i].key[1] == key[1]) {
+			*out_pipeline = r->compute.distortion_nlayer.pipelines[i].pipeline;
+			return VK_SUCCESS;
+		}
+	}
+
+	if (r->compute.distortion_nlayer.pipeline_count >= RENDER_NLAYER_PIPELINE_CACHE_CAP) {
+		U_LOG_E("nlayer pipeline cache full (%u variants); bump RENDER_NLAYER_PIPELINE_CACHE_CAP",
+		        (uint32_t)RENDER_NLAYER_PIPELINE_CACHE_CAP);
+		return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+	}
+
+	struct compute_distortion_nlayer_params params = {
+	    .distortion_texel_count = RENDER_DISTORTION_IMAGE_DIMENSIONS,
+	    .projection_bounds_test_mask = projection_bounds_test_mask,
+	    .view_count = (int32_t)r->view_count,
+	    .do_distortion = do_distortion ? VK_TRUE : VK_FALSE,
+	    .layer_count = (int32_t)layer_count,
+	    .scanout_direction = (int32_t)scanout_direction,
+	    .layer_types = layer_types,
+	    .layer_unpremult_mask = unpremult_mask,
+	    .layer_inverted_alpha_mask = inverted_alpha_mask,
+	    .eye_hidden_mask = eye_hidden_mask,
+	    .do_cac = do_cac ? VK_TRUE : VK_FALSE,
+	    .scanout_compensate_layers_mask = scanout_compensate_layers_mask,
+	};
+
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	VkResult ret = create_compute_distortion_nlayer_pipeline(           //
+	    r->vk,                                                          // vk_bundle
+	    r->pipeline_cache,                                              // pipeline_cache
+	    r->shaders->distortion_nlayer_comp,                             // shader
+	    r->compute.distortion_nlayer.pipeline_layouts[layer_count - 1], // pipeline_layout
+	    &params,                                                        // params
+	    &pipeline);                                                     // out_compute_pipeline
+	if (ret != VK_SUCCESS) {
+		return ret;
+	}
+
+	VK_NAME_PIPELINE(r->vk, pipeline, "render_resources compute distortion nlayer pipeline");
+
+	uint32_t slot = r->compute.distortion_nlayer.pipeline_count++;
+	r->compute.distortion_nlayer.pipelines[slot].key[0] = key[0];
+	r->compute.distortion_nlayer.pipelines[slot].key[1] = key[1];
+	r->compute.distortion_nlayer.pipelines[slot].pipeline = pipeline;
+
+	*out_pipeline = pipeline;
+	return VK_SUCCESS;
 }
 
 bool

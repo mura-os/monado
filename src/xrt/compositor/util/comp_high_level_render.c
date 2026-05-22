@@ -25,6 +25,8 @@ chl_frame_state_init(struct chl_frame_state *frame_state,
                      struct render_resources *rr,
                      uint32_t view_count,
                      bool do_timewarp,
+                     bool do_distortion,
+                     bool do_cac,
                      bool fast_path,
                      struct chl_scratch *scratch)
 {
@@ -39,7 +41,9 @@ chl_frame_state_init(struct chl_frame_state *frame_state,
 	comp_render_initial_init( //
 	    &frame_state->data,   // data
 	    fast_path,            // fast_path
-	    do_timewarp);         // do_timewarp
+	    do_timewarp,          // do_timewarp
+	    do_distortion,        // do_distortion
+	    do_cac);              // do_cac
 
 	chl_scratch_state_init_and_get(&frame_state->scratch_state, scratch);
 }

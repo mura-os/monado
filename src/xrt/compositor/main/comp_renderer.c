@@ -324,6 +324,7 @@ calc_pose_data(struct comp_renderer *r,
                struct xrt_pose out_world_scanout_begin[XRT_MAX_VIEWS],
                struct xrt_pose out_world_scanout_end[XRT_MAX_VIEWS],
                struct xrt_pose out_eye[XRT_MAX_VIEWS],
+               enum xrt_scanout_direction *out_scanout_direction,
                uint32_t view_count)
 {
 	COMP_TRACE_MARKER();
@@ -342,6 +343,12 @@ calc_pose_data(struct comp_renderer *r,
 	enum xrt_view_type view_type = (view_count == 1) ? XRT_VIEW_TYPE_MONO : XRT_VIEW_TYPE_STEREO;
 
 	const int64_t scanout_time_ns = calc_scanout_compensation_ns(r);
+
+	// Today the shader only implements TOP_TO_BOTTOM and NONE; the others
+	// fall through to NONE (single-matrix timewarp) which is correct for
+	// global flash and approximate for unimplemented rolling directions.
+	*out_scanout_direction =
+	    scanout_time_ns != 0 ? XRT_SCANOUT_DIRECTION_TOP_TO_BOTTOM : XRT_SCANOUT_DIRECTION_NONE;
 
 	int64_t begin_timestamp_ns = r->c->frame.rendering.predicted_display_time_ns;
 	int64_t end_timestamp_ns = begin_timestamp_ns + scanout_time_ns;
@@ -977,6 +984,7 @@ dispatch_graphics(struct comp_renderer *r,
 	struct xrt_pose world_poses_scanout_begin[XRT_MAX_VIEWS];
 	struct xrt_pose world_poses_scanout_end[XRT_MAX_VIEWS];
 	struct xrt_pose eye_poses[XRT_MAX_VIEWS];
+	enum xrt_scanout_direction scanout_direction = XRT_SCANOUT_DIRECTION_TOP_TO_BOTTOM;
 	calc_pose_data(                //
 	    r,                         //
 	    fov_source,                //
@@ -984,7 +992,9 @@ dispatch_graphics(struct comp_renderer *r,
 	    world_poses_scanout_begin, //
 	    world_poses_scanout_end,   //
 	    eye_poses,                 //
+	    &scanout_direction,        //
 	    render->r->view_count);    //
+	frame_state->data.scanout_direction = scanout_direction;
 
 	// Does everything.
 	chl_frame_state_gfx_default_pipeline( //
@@ -1038,6 +1048,7 @@ dispatch_compute(struct comp_renderer *r,
 	struct xrt_pose world_poses_scanout_begin[XRT_MAX_VIEWS];
 	struct xrt_pose world_poses_scanout_end[XRT_MAX_VIEWS];
 	struct xrt_pose eye_poses[XRT_MAX_VIEWS];
+	enum xrt_scanout_direction scanout_direction = XRT_SCANOUT_DIRECTION_TOP_TO_BOTTOM;
 	calc_pose_data(                //
 	    r,                         //
 	    fov_source,                //
@@ -1045,7 +1056,9 @@ dispatch_compute(struct comp_renderer *r,
 	    world_poses_scanout_begin, //
 	    world_poses_scanout_end,   //
 	    eye_poses,                 //
+	    &scanout_direction,        //
 	    render->r->view_count);    //
+	frame_state->data.scanout_direction = scanout_direction;
 
 	// Target Vulkan resources..
 	VkImage target_image = r->c->target->images[r->acquired_buffer].handle;
@@ -1182,6 +1195,9 @@ comp_renderer_draw(struct comp_renderer *r)
 
 	bool fast_path = !clear_and_pause && c->base.frame_params.one_projection_layer_fast_path;
 	bool do_timewarp = !c->debug.atw_off;
+	bool do_distortion = c->xdev->hmd->distortion.preferred != XRT_DISTORTION_MODEL_NONE;
+	bool device_wants_cac = !c->xdev->hmd->distortion.no_chromatic_aberration_correction;
+	bool do_cac = do_distortion && device_wants_cac && !c->debug.cac_off;
 
 	// Consistency check.
 	assert(!fast_path || c->base.layer_accum.layer_count >= 1);
@@ -1193,6 +1209,8 @@ comp_renderer_draw(struct comp_renderer *r)
 	    &c->nr,           //
 	    view_count,       //
 	    do_timewarp,      //
+	    do_distortion,    //
+	    do_cac,           //
 	    fast_path,        //
 	    &c->scratch);     //
 
@@ -1325,7 +1343,7 @@ comp_renderer_draw(struct comp_renderer *r)
 		renderer_wait_for_present(r, desired_present_time_ns);
 	}
 
-	if (xret == XRT_SUCCESS && presented && clear_and_pause) {
+	if (xret == XRT_SUCCESS && present_success && clear_and_pause) {
 		const char *reason = user_allows_rendering ? "No layers are available" : "User is absent";
 		COMP_INFO(c, "%s, pausing rendering after clearing the display.", reason);
 		comp_compositor_set_rendering(c, false);

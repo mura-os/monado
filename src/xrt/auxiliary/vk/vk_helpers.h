@@ -239,8 +239,7 @@ struct vk_bundle
 		uint32_t max_per_stage_descriptor_sampled_images;
 
 		//! Per stage limit on storage images.
-		uint32_t max_per_stage_descriptor_storage_images;
-	} limits;
+		uint32_t max_per_stage_descriptor_storage_images;	} limits;
 
 	//! Is the GPU a tegra device.
 	bool is_tegra;
@@ -1002,6 +1001,17 @@ vk_create_image_advanced(struct vk_bundle *vk,
  */
 VkResult
 vk_create_sampler(struct vk_bundle *vk, VkSamplerAddressMode clamp_mode, VkSampler *out_sampler);
+
+/*!
+ * As @ref vk_create_sampler, but with an explicit border color.
+ *
+ * @ingroup aux_vk
+ */
+VkResult
+vk_create_sampler_border(struct vk_bundle *vk,
+                         VkSamplerAddressMode clamp_mode,
+                         VkBorderColor border_color,
+                         VkSampler *out_sampler);
 
 
 /*

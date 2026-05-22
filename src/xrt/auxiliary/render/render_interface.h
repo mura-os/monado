@@ -88,6 +88,32 @@ extern "C" {
 #define RENDER_MAX_LAYER_RUNS_SIZE (XRT_MAX_VIEWS)
 #define RENDER_MAX_LAYER_RUNS_COUNT(RENDER_RESOURCES) (RENDER_RESOURCES->view_count)
 
+/*!
+ * Compile-time upper bound on the N-layer fast path's layer count. Sizes the
+ * static arrays of per-N descriptor set layouts / pipeline layouts /
+ * descriptor sets, and is the absolute ceiling for the shader's UBO. The
+ * actual runtime cap is `effective_nlayer_max` (see struct
+ * `render_resources::compute::distortion_nlayer`), which may be lower when
+ * device per-stage descriptor limits would not host this many. Must match
+ * MAX_NLAYER in distortion_nlayer.comp.
+ */
+#define RENDER_NLAYER_MAX (8)
+
+/*!
+ * Capacity of the per-variant pipeline cache for the N-layer fast path.
+ * Variant key is (layer_count, layer_types,
+ * layer_unpremult_mask, layer_inverted_alpha_mask,
+ * scanout_compensate_layers_mask, do_distortion, do_cac, scanout_direction);
+ * apps typically cycle through <30 patterns per session
+ * even with the alpha mask axes, so this is well over-
+ * provisioned. The cap exists as a defensive guardrail against runaway variant
+ * creation, not as a tight budget. Linear search; lookup at this size is still
+ * sub-microsecond and dwarfed by per-frame Vulkan submit overhead. If it fills
+ * up render_resources_get_or_create_nlayer_pipeline returns
+ * VK_ERROR_OUT_OF_DEVICE_MEMORY.
+ */
+#define RENDER_NLAYER_PIPELINE_CACHE_CAP (1024)
+
 //! Distortion image dimension in pixels
 #define RENDER_DISTORTION_IMAGE_DIMENSIONS (128)
 
@@ -147,6 +173,23 @@ render_calc_time_warp_matrix(const struct xrt_pose *src_pose,
                              const struct xrt_fov *src_fov,
                              const struct xrt_pose *new_pose,
                              struct xrt_matrix_4x4 *matrix);
+
+/*!
+ * Folds the [-1, 1] -> [0, 1] remap and a layer's sub-image rect into a
+ * matrix from @ref render_calc_time_warp_matrix, so xy / w after the
+ * multiply is already the final source UV.
+ */
+void
+render_time_warp_matrix_fold_remap_and_rect(struct xrt_matrix_4x4 *matrix, const struct xrt_normalized_rect *rect);
+
+/*!
+ * Builds the scale/bias (out.w/h, out.x/y) mapping a projection source UV
+ * onto [-1, 1]^2 over the layer's sub-image rect, for the shader bounds
+ * test `max(|uv * scale + bias|) <= 1`. Sign-symmetric, so a flip_y-negated
+ * height just works; a degenerate rect maps to always-outside.
+ */
+void
+render_calc_proj_bounds_transform(const struct xrt_normalized_rect *rect, struct xrt_normalized_rect *out_transform);
 
 /*!
  * This function constructs a transformation in the form of a normalized rect
@@ -395,6 +438,12 @@ struct render_resources
 
 		//! Sampler that clamps color samples to black in all directions.
 		VkSampler clamp_to_border_black;
+
+		/*!
+		 * Same but with a transparent border, for gfx N-layer projection
+		 * slots: an out-of-image fetch composites as nothing.
+		 */
+		VkSampler clamp_to_border_transparent;
 	} samplers;
 
 	struct
@@ -527,6 +576,59 @@ struct render_resources
 			struct render_buffer ubo;
 		} distortion;
 
+		//! N-layer fast path: composites up to effective_nlayer_max layers of
+		//! projection / quad / cylinder / equirect2 type in one dispatch.
+		//! Projection layers get per-layer timewarp + geometric distortion,
+		//! optionally with chromatic-aberration correction; the others get a
+		//! view-space ray-shape intersection against their primitive. Writes
+		//! straight to the swapchain. At N=1 with a pure projection layer it
+		//! reproduces the existing 1-layer fast path's output; everything else
+		//! replaces the layer squasher's scratch round trip.
+		//!
+		//! Per-N descriptor set layouts: layer_count is a spec const that
+		//! varies between pipeline variants, so each variant's shader declares
+		//! a different `sources` array size. To avoid mock-filling unused
+		//! slots in a max-sized descriptor set, we maintain one descriptor
+		//! set layout per supported layer_count, with binding 0's
+		//! `descriptorCount = layer_count * view_count`. Indices are
+		//! [layer_count - 1] (so N=1 lives at [0]).
+		struct
+		{
+			//! Maximum N actually supported on this device, in [0, RENDER_NLAYER_MAX].
+			//! Computed at init from the device's per-stage descriptor limits:
+			//! the path needs `N * view_count + 3 * view_count` combined image
+			//! samplers per stage, so the budget is
+			//! `(min(max_per_stage_descriptor_samplers,
+			//!       max_per_stage_descriptor_sampled_images) - 3 * view_count)
+			//!  / view_count`, clamped against RENDER_NLAYER_MAX. Variants with
+			//! N > effective_nlayer_max are rejected by the eligibility check
+			//! and fall through to the squasher. Zero means the device can't
+			//! host even N=1; the path is disabled and only the static fields
+			//! below are zero-initialised — pool/sets/layouts are not created.
+			uint32_t effective_nlayer_max;
+
+			VkDescriptorSetLayout descriptor_set_layouts[RENDER_NLAYER_MAX];
+			VkPipelineLayout pipeline_layouts[RENDER_NLAYER_MAX];
+
+			//! Per-variant pipeline cache, built lazily on first use.
+			//! Linear search since the active set is small (typically <50
+			//! variants over a session) and lookup is off the per-pixel
+			//! hot path.
+			struct
+			{
+				//! Two packed words, see nlayer_pipeline_key().
+				uint64_t key[2];
+				VkPipeline pipeline;
+			} pipelines[RENDER_NLAYER_PIPELINE_CACHE_CAP];
+			uint32_t pipeline_count;
+
+			//! Single pool serving all effective_nlayer_max per-N descriptor sets.
+			VkDescriptorPool descriptor_pool;
+			VkDescriptorSet descriptor_sets[RENDER_NLAYER_MAX];
+
+			struct render_buffer ubo;
+		} distortion_nlayer;
+
 		struct
 		{
 			//! Doesn't depend on target so is static.
@@ -578,6 +680,52 @@ render_resources_init(struct render_resources *r,
  */
 void
 render_resources_fini(struct render_resources *r);
+
+/*!
+ * Lazy-build helper for the N-layer fast path. Returns a compute pipeline
+ * specialized to (@p layer_count, @p layer_types, @p unpremult_mask,
+ * @p inverted_alpha_mask, @p eye_hidden_mask,
+ * @p scanout_compensate_layers_mask, @p do_distortion, @p do_cac,
+ * @p scanout_direction), creating it on first request and caching it under
+ * @c r->compute.distortion_nlayer. Must be called between
+ * @ref render_compute_begin and @ref render_compute_end for the active frame,
+ * on the compositor thread.
+ *
+ * @p unpremult_mask / @p inverted_alpha_mask: 1 bit per slot, one spec-const mask
+ * per alpha feature; a zero mask folds its path away.
+ *
+ * @p eye_hidden_mask: 2 bits per slot, set means HIDDEN in the corresponding
+ * view. C side encodes (XRT_LAYER_EYE_VISIBILITY_BOTH XOR visibility) so
+ * BOTH = 0 and the common case fits a single cache entry (mask = 0).
+ *
+ * @p scanout_compensate_layers_mask: 1 bit per slot, set = no scanout
+ * (begin -> end pose) compensation for that slot; replaces the shader-level
+ * do_timewarp. Canonicalized before lookup: bits above @p layer_count are
+ * cleared and @p scanout_direction folds to NONE iff no slot is
+ * compensated, so identical dispatches share one pipeline.
+ *
+ * A set bit in @p projection_bounds_test_mask makes that projection slot
+ * bounds-test its source UVs (spec id 1). Only clear a bit when border
+ * sampling already handles out-of-FOV correctly for the slot: the rect
+ * covers the whole image, and it is bottom-most, blends with plain source
+ * alpha, or covers the display FOV. Bits on non-projection slots are
+ * canonicalized away.
+ *
+ * @public @memberof render_resources
+ */
+VkResult
+render_resources_get_or_create_nlayer_pipeline(struct render_resources *r,
+                                               uint32_t layer_count,
+                                               uint32_t layer_types,
+                                               uint32_t unpremult_mask,
+                                               uint32_t inverted_alpha_mask,
+                                               uint32_t eye_hidden_mask,
+                                               uint32_t scanout_compensate_layers_mask,
+                                               uint32_t projection_bounds_test_mask,
+                                               bool do_distortion,
+                                               bool do_cac,
+                                               enum xrt_scanout_direction scanout_direction,
+                                               VkPipeline *out_pipeline);
 
 /*!
  * Creates or recreates the compute distortion textures if necessary.
@@ -1387,6 +1535,76 @@ struct render_compute_distortion_ubo_data
 };
 
 /*!
+ * Per-(layer, view) quad data for the N-layer fast path. Layout must match
+ * the `QuadData` struct in distortion_nlayer.comp under std140 (each vec3
+ * padded to 16, mat4 at offset 32, vec2 + 8 bytes tail padding → 112 bytes
+ * total).
+ */
+struct render_compute_nlayer_quad_data
+{
+	struct xrt_vec3 position;
+	float _pad0;
+	struct xrt_vec3 normal;
+	float _pad1;
+	struct xrt_matrix_4x4 inverse_transform;
+	struct xrt_vec2 extent;
+	float _pad2[2];
+};
+
+/*!
+ * Per-(layer, view) cylinder / equirect2 ("wrap") data for the N-layer fast
+ * path. Layout must match the `WrapData` struct in distortion_nlayer.comp
+ * under std140 (mat4 at offset 0, vec4 at offset 64 → 80 bytes total).
+ *
+ * `mv_inverse` = model_inv * view_inv. `params` is interpreted per-type:
+ *   cylinder:  (radius, central_angle, aspect_ratio, _)
+ *   equirect2: (radius, central_horizontal_angle, upper_vertical_angle,
+ *               lower_vertical_angle)
+ */
+struct render_compute_nlayer_wrap_data
+{
+	struct xrt_matrix_4x4 mv_inverse;
+	float params[4];
+};
+
+/*!
+ * UBO for the N-layer fast path. `pre_transforms` is shared across layers
+ * (one entry per view, display-FOV-derived); `post_transforms`, timewarp
+ * matrices, `quads`, and `wraps` are flat arrays indexed as
+ * `[layer * XRT_MAX_VIEWS + view]`. The alpha masks travel via the
+ * `layer_unpremult_mask` (id 7) / `layer_inverted_alpha_mask` (id 8) spec consts.
+ *
+ * Projection slots: the matrices carry the folded [0, 1] remap and
+ * sub-image rect (@ref render_time_warp_matrix_fold_remap_and_rect), the
+ * begin matrix may hold a static source mapping, the end matrix is only
+ * filled for scanout-compensated slots, and their `post_transforms` entries
+ * hold the out-of-FOV bounds test transform
+ * (@ref render_calc_proj_bounds_transform), not a sampling rect.
+ *
+ * @relates render_compute
+ */
+struct render_compute_distortion_nlayer_ubo_data
+{
+	struct render_viewport_data views[XRT_MAX_VIEWS];
+	struct xrt_normalized_rect pre_transforms[XRT_MAX_VIEWS];
+	/*!
+	 * Per-view head-rotation delta R = R_pose_begin^-1 * R_pose_end as a 4x4
+	 * (translation column = (0,0,0,1)). Lerped from identity by scanout_t in
+	 * the shader, then applied to view-space ray directions of scanout-
+	 * compensated non-projection layers (quad / cylinder / equirect2) so
+	 * they get per-row scanout compensation matching what the squasher's
+	 * pass-2 2D timewarp gives them. Only consumed when such a slot
+	 * exists.
+	 */
+	struct xrt_matrix_4x4 scanout_view_rot_delta[XRT_MAX_VIEWS];
+	struct xrt_normalized_rect post_transforms[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+	struct xrt_matrix_4x4 transform_timewarp_scanout_begin[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+	struct xrt_matrix_4x4 transform_timewarp_scanout_end[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+	struct render_compute_nlayer_quad_data quads[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+	struct render_compute_nlayer_wrap_data wraps[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+};
+
+/*!
  * Init struct and create resources needed for compute rendering.
  *
  * @public @memberof render_compute
@@ -1488,6 +1706,97 @@ render_compute_projection_no_timewarp(struct render_compute *render,
                                       VkImageView target_image_view,
                                       VkImageLayout target_final_layout,
                                       const struct render_viewport_data views[XRT_MAX_VIEWS]);
+
+/*!
+ * Per-slot layer-type encoding for the N-layer fast path's @c layer_types
+ * spec constant. 2 bits per slot; must match the LAYER_TYPE_* defines in
+ * distortion_nlayer.comp.
+ */
+enum render_nlayer_type
+{
+	RENDER_NLAYER_TYPE_PROJECTION = 0,
+	RENDER_NLAYER_TYPE_QUAD = 1,
+	RENDER_NLAYER_TYPE_CYLINDER = 2,
+	RENDER_NLAYER_TYPE_EQUIRECT2 = 3,
+};
+
+//! Bits per slot in the packed @c layer_types spec constant.
+#define RENDER_NLAYER_TYPE_BITS (2)
+
+/*!
+ * Composites up to @p layer_count projection / quad / cylinder / equirect2
+ * layer sources over each other in submission order in a single dispatch
+ * directly to the swapchain. Projection layers get per-layer timewarp +
+ * geometric distortion, optionally with chromatic aberration correction;
+ * non-projection layers get view-space ray-shape intersection. Generalises the
+ * 1-layer fast path: at
+ * @p layer_count == 1 with @p layer_types == 0 it produces the same output
+ * as @ref render_compute_projection_timewarp.
+ *
+ * Per-layer arrays (samplers, views, rects, poses, fovs, quad_data,
+ * wrap_data) are flat, indexed as [layer * XRT_MAX_VIEWS + view], length
+ * layer_count * view_count.
+ *
+ * @p layer_types packs the per-slot @ref render_nlayer_type at
+ * (slot * RENDER_NLAYER_TYPE_BITS). Bits past layer_count*BITS are ignored.
+ *
+ * @p view_space_slots: 1 bit per slot, set for layers submitted in VIEW
+ * space. View-space projections warp against @p eye_poses instead of the
+ * world scanout poses, and no view-space slot takes scanout compensation:
+ * the content is locked to the device, head motion must not leak into it.
+ *
+ * @p unpremultiplied_mask / @p inverted_alpha_mask: 1 bit per slot, one per feature.
+ *
+ * @p projection_bounds_test_mask: 1 bit per slot, set = the projection slot
+ * bounds-tests its source UVs. A cleared bit needs a border sampler in
+ * @p src_samplers that composites out-of-image samples correctly on its
+ * own; see @ref render_resources_get_or_create_nlayer_pipeline for when
+ * that holds.
+ *
+ * For projection slots, @p src_poses, @p src_fovs, @p new_poses_scanout_*
+ * and @p eye_poses drive the per-(layer, view) matrix. It is always built;
+ * with @p do_timewarp off it holds the static source-FOV mapping.
+ * For quad slots those entries are ignored; @p quad_data carries view-space
+ * position/normal/inverse transform/extent instead. For cylinder/equirect2
+ * slots, @p wrap_data carries view-space @c mv_inverse + per-type params.
+ *
+ * @p layer_count must be in [1, @c r->compute.distortion_nlayer.effective_nlayer_max].
+ * RENDER_NLAYER_MAX is the compile-time upper bound; the actual runtime cap
+ * may be lower on devices reporting smaller per-stage descriptor limits.
+ *
+ * @return true on success; false if the per-variant pipeline build failed
+ * (cache full or shader compile error). On false, the function records no
+ * command-buffer state — the caller can safely route to the squasher
+ * fallback in the same frame.
+ *
+ * @public @memberof render_compute
+ */
+bool
+render_compute_projection_nlayer_timewarp(struct render_compute *render,
+                                          uint32_t layer_count,
+                                          uint32_t layer_types,
+                                          uint32_t view_space_slots,
+                                          VkSampler *src_samplers,
+                                          VkImageView *src_image_views,
+                                          const struct xrt_normalized_rect *src_rects,
+                                          const struct xrt_pose *src_poses,
+                                          const struct xrt_fov *src_fovs,
+                                          const struct render_compute_nlayer_quad_data *quad_data,
+                                          const struct render_compute_nlayer_wrap_data *wrap_data,
+                                          const struct xrt_pose new_poses_scanout_begin[XRT_MAX_VIEWS],
+                                          const struct xrt_pose new_poses_scanout_end[XRT_MAX_VIEWS],
+                                          const struct xrt_pose eye_poses[XRT_MAX_VIEWS],
+                                          uint32_t unpremultiplied_mask,
+                                          uint32_t inverted_alpha_mask,
+                                          uint32_t eye_hidden_mask,
+                                          uint32_t projection_bounds_test_mask,
+                                          VkImage target_image,
+                                          VkImageView target_image_view,
+                                          const struct render_viewport_data views[XRT_MAX_VIEWS],
+                                          bool do_timewarp,
+                                          bool do_distortion,
+                                          bool do_cac,
+                                          enum xrt_scanout_direction scanout_direction);
 
 /*!
  * @public @memberof render_compute

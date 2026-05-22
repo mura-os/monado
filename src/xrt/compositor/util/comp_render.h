@@ -186,6 +186,21 @@ struct comp_render_dispatch_data
 	//! Very often true, can be disabled for debugging.
 	bool do_timewarp;
 
+	//! False when the HMD reports @ref XRT_DISTORTION_MODEL_NONE; identity UV, no LUT.
+	bool do_distortion;
+
+	//! False when chromatic aberration correction should be skipped.
+	bool do_cac;
+
+	/*!
+	 * Panel scanout direction. Mirrors @ref xrt_scanout_direction from the device's
+	 * @ref xrt_device_compositor_info. Today the timewarp shaders implement
+	 * @ref XRT_SCANOUT_DIRECTION_NONE (single-matrix, global-flash panels) and
+	 * @ref XRT_SCANOUT_DIRECTION_TOP_TO_BOTTOM (per-row lerp); other directions
+	 * fall through to NONE with a warning until they're implemented.
+	 */
+	enum xrt_scanout_direction scanout_direction;
+
 	struct
 	{
 		//! Has this struct been setup to use the target.
@@ -226,14 +241,24 @@ struct comp_render_dispatch_data
  * @param[out] data Common render dispatch data. Will be zeroed and initialized.
  * @param fast_path Whether we will use the "fast path" avoiding layer squashing.
  * @param do_timewarp Whether timewarp (reprojection) will be performed.
+ * @param do_distortion Whether lens distortion correction will be performed.
+ * @param do_cac Whether chromatic aberration correction will be performed.
+ *
+ * @note scanout_direction defaults to TOP_TO_BOTTOM (preserves the per-row lerp); the
+ *       dispatch path overrides it once @ref calc_pose_data has read the device's
+ *       @ref xrt_device_compositor_info for the frame.
  */
 static inline void
-comp_render_initial_init(struct comp_render_dispatch_data *data, bool fast_path, bool do_timewarp)
+comp_render_initial_init(
+    struct comp_render_dispatch_data *data, bool fast_path, bool do_timewarp, bool do_distortion, bool do_cac)
 {
 	U_ZERO(data);
 
 	data->fast_path = fast_path;
 	data->do_timewarp = do_timewarp;
+	data->do_distortion = do_distortion;
+	data->do_cac = do_cac;
+	data->scanout_direction = XRT_SCANOUT_DIRECTION_TOP_TO_BOTTOM;
 }
 
 /*!

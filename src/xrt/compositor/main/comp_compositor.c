@@ -64,6 +64,7 @@
 #include "util/u_verify.h"
 
 #include "util/comp_vulkan.h"
+#include "render/render_interface.h"
 #include "main/comp_compositor.h"
 #include "main/comp_frame.h"
 
@@ -281,37 +282,64 @@ compositor_discard_frame(struct xrt_compositor *xc, int64_t frame_id)
 }
 
 /*!
- * We have a fast path for single projection layer that goes directly
- * to the distortion shader, so no need to use the layer renderer.
+ * Eligibility test for the layer fast paths, which bypass the layer squasher.
+ *
+ * Compute: accepts 1..effective_nlayer_max layers of any supported type —
+ * projection (incl. depth variant), quad, cylinder, equirect2. Routing between
+ * the 1-layer and N-layer dispatches happens in comp_render_cs_dispatch.
+ *
+ * Gfx: only the single-projection-layer fast path is implemented, so exactly
+ * one projection layer is accepted.
+ *
+ * In both cases layers using features the distortion shaders can't represent
+ * (chroma key, color bias/scale) are rejected.
  */
 static bool
-can_do_one_projection_layer_fast_path(struct comp_compositor *c)
+can_do_projection_layer_fast_path(struct comp_compositor *c)
 {
-	if (c->base.layer_accum.layer_count != 1) {
-		return false;
-	}
+	uint32_t layer_count = c->base.layer_accum.layer_count;
 
-	struct comp_layer *layer = &c->base.layer_accum.layers[0];
-	if (layer->data.flags & XRT_LAYER_COMPOSITION_COLOR_BIAS_SCALE) {
-		return false;
-	}
-
-	enum xrt_layer_type type = layer->data.type;
-
-	// Check if chroma key is active for projection layers
-	if (type == XRT_LAYER_PROJECTION) {
-		if (layer->data.proj.chroma_key.curve > 0.0f) {
+	if (c->settings.use_compute) {
+		if (layer_count < 1 || layer_count > c->nr.compute.distortion_nlayer.effective_nlayer_max) {
 			return false;
 		}
-	} else if (type == XRT_LAYER_PROJECTION_DEPTH) {
-		if (layer->data.depth.chroma_key.curve > 0.0f) {
+	} else {
+		if (layer_count != 1) {
+			return false;
+		}
+		enum xrt_layer_type type = c->base.layer_accum.layers[0].data.type;
+		if (type != XRT_LAYER_PROJECTION && type != XRT_LAYER_PROJECTION_DEPTH) {
 			return false;
 		}
 	}
 
-	// Handled by the distortion shader.
-	return type == XRT_LAYER_PROJECTION || //
-	       type == XRT_LAYER_PROJECTION_DEPTH;
+	for (uint32_t i = 0; i < layer_count; ++i) {
+		struct comp_layer *layer = &c->base.layer_accum.layers[i];
+		enum xrt_layer_type type = layer->data.type;
+
+		if (type != XRT_LAYER_PROJECTION && type != XRT_LAYER_PROJECTION_DEPTH &&
+		    type != XRT_LAYER_QUAD && type != XRT_LAYER_CYLINDER && type != XRT_LAYER_EQUIRECT2) {
+			return false;
+		}
+
+		if (layer->data.flags & XRT_LAYER_COMPOSITION_COLOR_BIAS_SCALE) {
+			return false;
+		}
+
+		// Chroma key is a projection-only feature in xrt_layer_data; the
+		// other supported types have no chroma_key field.
+		if (type == XRT_LAYER_PROJECTION) {
+			if (layer->data.proj.chroma_key.curve > 0.0f) {
+				return false;
+			}
+		} else if (type == XRT_LAYER_PROJECTION_DEPTH) {
+			if (layer->data.depth.chroma_key.curve > 0.0f) {
+				return false;
+			}
+		}
+	}
+
+	return true;
 }
 
 static XRT_CHECK_RESULT xrt_result_t
@@ -324,14 +352,16 @@ compositor_layer_commit(struct xrt_compositor *xc, xrt_graphics_sync_handle_t sy
 	COMP_SPEW(c, "LAYER_COMMIT at %8.3fms", ts_ms());
 
 	/*
-	 * We have a fast path for single projection layer that goes directly
-	 * to the distortion shader, so no need to use the layer renderer.
+	 * Fast paths bypass the layer squasher's view-extent scratch round
+	 * trip: compute composites + distorts all eligible layers in one
+	 * N-layer dispatch; gfx sends its single projection layer straight
+	 * through the distortion shader.
 	 */
-	bool fast_path =                              //
-	    !c->peek &&                               //
-	    !c->mirroring_to_debug_gui &&             //
-	    !c->debug.disable_fast_path &&            //
-	    can_do_one_projection_layer_fast_path(c); //
+	bool fast_path =                          //
+	    !c->peek &&                           //
+	    !c->mirroring_to_debug_gui &&         //
+	    !c->debug.disable_fast_path &&        //
+	    can_do_projection_layer_fast_path(c); //
 	c->base.frame_params.one_projection_layer_fast_path = fast_path;
 
 
@@ -1295,6 +1325,7 @@ comp_main_create_system_compositor(struct xrt_device *xdev,
 	u_var_add_ro_f32(c, &c->compositor_frame_times.fps, "FPS (Compositor)");
 	u_var_add_bool(c, &c->debug.atw_off, "Debug: ATW OFF");
 	u_var_add_bool(c, &c->debug.disable_fast_path, "Debug: Disable fast path");
+	u_var_add_bool(c, &c->debug.cac_off, "Debug: CAC OFF");
 	u_var_add_f32_timing(c, c->compositor_frame_times.debug_var, "Frame Times (Compositor)");
 
 	// Only add active views.

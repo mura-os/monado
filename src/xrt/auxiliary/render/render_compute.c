@@ -697,6 +697,352 @@ render_compute_projection_no_timewarp(struct render_compute *render,
 	                          target_final_layout, views, r->compute.distortion.pipeline);
 }
 
+static void
+update_compute_distortion_nlayer_descriptor_set(struct vk_bundle *vk,
+                                                VkDescriptorSet descriptor_set,
+                                                uint32_t view_count,
+                                                uint32_t layer_count,
+                                                VkSampler *src_samplers,
+                                                VkImageView *src_image_views,
+                                                VkSampler distortion_samplers[3 * XRT_MAX_VIEWS],
+                                                VkImageView distortion_image_views[3 * XRT_MAX_VIEWS],
+                                                VkImageView target_image_view,
+                                                VkBuffer ubo_buffer)
+{
+	// Source slots: exactly layer_count * view_count entries. The descriptor
+	// set this writes into was allocated from the per-N layout that declares
+	// the matching descriptorCount, so there are no unused slots to mock-fill.
+	VkDescriptorImageInfo src_image_info[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+	for (uint32_t layer = 0; layer < layer_count; ++layer) {
+		for (uint32_t view = 0; view < view_count; ++view) {
+			uint32_t idx = layer * view_count + view;
+			src_image_info[idx].sampler = src_samplers[idx];
+			src_image_info[idx].imageView = src_image_views[idx];
+			src_image_info[idx].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		}
+	}
+
+	VkDescriptorImageInfo distortion_image_info[3 * XRT_MAX_VIEWS];
+	for (uint32_t i = 0; i < 3 * view_count; ++i) {
+		distortion_image_info[i].sampler = distortion_samplers[i];
+		distortion_image_info[i].imageView = distortion_image_views[i];
+		distortion_image_info[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	}
+
+	VkDescriptorImageInfo target_image_info = {
+	    .imageView = target_image_view,
+	    .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
+	};
+
+	VkDescriptorBufferInfo buffer_info = {
+	    .buffer = ubo_buffer,
+	    .offset = 0,
+	    .range = VK_WHOLE_SIZE,
+	};
+
+	VkWriteDescriptorSet writes[4] = {
+	    {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+	     .dstSet = descriptor_set,
+	     .dstBinding = 0,
+	     .descriptorCount = layer_count * view_count,
+	     .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	     .pImageInfo = src_image_info},
+	    {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+	     .dstSet = descriptor_set,
+	     .dstBinding = 1,
+	     .descriptorCount = 3 * view_count,
+	     .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	     .pImageInfo = distortion_image_info},
+	    {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+	     .dstSet = descriptor_set,
+	     .dstBinding = 2,
+	     .descriptorCount = 1,
+	     .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+	     .pImageInfo = &target_image_info},
+	    {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+	     .dstSet = descriptor_set,
+	     .dstBinding = 3,
+	     .descriptorCount = 1,
+	     .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+	     .pBufferInfo = &buffer_info},
+	};
+
+	vk->vkUpdateDescriptorSets(vk->device, ARRAY_SIZE(writes), writes, 0, NULL);
+}
+
+bool
+render_compute_projection_nlayer_timewarp(struct render_compute *render,
+                                          uint32_t layer_count,
+                                          uint32_t layer_types,
+                                          uint32_t view_space_slots,
+                                          VkSampler *src_samplers,
+                                          VkImageView *src_image_views,
+                                          const struct xrt_normalized_rect *src_rects,
+                                          const struct xrt_pose *src_poses,
+                                          const struct xrt_fov *src_fovs,
+                                          const struct render_compute_nlayer_quad_data *quad_data,
+                                          const struct render_compute_nlayer_wrap_data *wrap_data,
+                                          const struct xrt_pose new_poses_scanout_begin[XRT_MAX_VIEWS],
+                                          const struct xrt_pose new_poses_scanout_end[XRT_MAX_VIEWS],
+                                          const struct xrt_pose eye_poses[XRT_MAX_VIEWS],
+                                          uint32_t unpremultiplied_mask,
+                                          uint32_t inverted_alpha_mask,
+                                          uint32_t eye_hidden_mask,
+                                          uint32_t projection_bounds_test_mask,
+                                          VkImage target_image,
+                                          VkImageView target_image_view,
+                                          const struct render_viewport_data views[XRT_MAX_VIEWS],
+                                          bool do_timewarp,
+                                          bool do_distortion,
+                                          bool do_cac,
+                                          enum xrt_scanout_direction scanout_direction)
+{
+	assert(render->r != NULL);
+	assert(layer_count >= 1);
+	assert(layer_count <= render->r->compute.distortion_nlayer.effective_nlayer_max);
+
+	struct vk_bundle *vk = vk_from_render(render);
+	struct render_resources *r = render->r;
+	const uint32_t view_count = r->view_count;
+
+	// Today only TOP_TO_BOTTOM uses the begin/end lerp; everything else is
+	// treated as global flash (single matrix).
+	bool needs_end_pose = scanout_direction == XRT_SCANOUT_DIRECTION_TOP_TO_BOTTOM;
+
+	// Set bit = no scanout compensation: view-space slots never take it,
+	// and with timewarp off or a global-flash display nothing does. Must
+	// agree with slot_compensated below.
+	const uint32_t used_slots = (1u << layer_count) - 1u;
+	uint32_t scanout_compensate_layers_mask;
+	if (do_timewarp && needs_end_pose) {
+		scanout_compensate_layers_mask = view_space_slots & used_slots;
+	} else {
+		scanout_compensate_layers_mask = used_slots;
+	}
+
+	/*
+	 * UBO
+	 */
+
+	struct render_compute_distortion_nlayer_ubo_data *data =
+	    (struct render_compute_distortion_nlayer_ubo_data *)r->compute.distortion_nlayer.ubo.mapped;
+
+	for (uint32_t i = 0; i < view_count; i++) {
+		data->views[i] = views[i];
+		data->pre_transforms[i] = r->distortion.uv_to_tanangle[i];
+
+		// Per-view rotation R_delta = R_pose_begin^-1 * R_pose_end (rotation
+		// only). The shader lerps this from identity by scanout_t and applies
+		// it to compensated non-projection layers, giving them the same
+		// per-row head-rotation delta the squasher applies in 2D via its
+		// pass-2 timewarp. Identity when nothing can be compensated.
+		if (do_timewarp && needs_end_pose) {
+			const struct xrt_vec3 unit_scale = {1.0f, 1.0f, 1.0f};
+			struct xrt_pose rot_only_begin = {.orientation = new_poses_scanout_begin[i].orientation,
+			                                  .position = {0.0f, 0.0f, 0.0f}};
+			struct xrt_pose rot_only_end = {.orientation = new_poses_scanout_end[i].orientation,
+			                                .position = {0.0f, 0.0f, 0.0f}};
+			struct xrt_matrix_4x4 R_begin, R_end, R_begin_inv;
+			math_matrix_4x4_model(&rot_only_begin, &unit_scale, &R_begin);
+			math_matrix_4x4_model(&rot_only_end, &unit_scale, &R_end);
+			math_matrix_4x4_inverse(&R_begin, &R_begin_inv);
+			math_matrix_4x4_multiply(&R_begin_inv, &R_end, &data->scanout_view_rot_delta[i]);
+		} else {
+			math_matrix_4x4_identity(&data->scanout_view_rot_delta[i]);
+		}
+	}
+
+	for (uint32_t layer = 0; layer < layer_count; layer++) {
+		const uint32_t slot_type = (layer_types >> (layer * RENDER_NLAYER_TYPE_BITS)) & 3u;
+		// The timewarp destination must be in the same space as the
+		// submitted pose: eye pose for view-space slots, world scanout
+		// pose for timewarped world slots, the pose itself with timewarp
+		// off (which still bakes in the source FOV).
+		const bool view_space = ((view_space_slots >> layer) & 1u) != 0u;
+		const bool slot_timewarp = do_timewarp && !view_space;
+		const bool slot_compensated = slot_timewarp && needs_end_pose;
+		for (uint32_t view = 0; view < view_count; view++) {
+			uint32_t src_i = layer * view_count + view;
+			uint32_t ubo_i = layer * XRT_MAX_VIEWS + view;
+
+			if (slot_type == RENDER_NLAYER_TYPE_PROJECTION) {
+				// The sampling rect is folded into the matrices
+				// below; the post_transforms entry instead carries
+				// the shader's out-of-FOV bounds test transform.
+				render_calc_proj_bounds_transform(&src_rects[src_i], &data->post_transforms[ubo_i]);
+			} else {
+				data->post_transforms[ubo_i] = src_rects[src_i];
+			}
+
+			// Non-projection slots: timewarp matrices are unused by
+			// the shader; leave them at whatever they previously held.
+			// Per-type slice of the UBO carries the real state.
+			switch (slot_type) {
+			case RENDER_NLAYER_TYPE_QUAD:
+				data->quads[ubo_i] = quad_data[src_i];
+				break;
+			case RENDER_NLAYER_TYPE_CYLINDER:
+			case RENDER_NLAYER_TYPE_EQUIRECT2:
+				data->wraps[ubo_i] = wrap_data[src_i];
+				break;
+			case RENDER_NLAYER_TYPE_PROJECTION:
+			default: {
+				const struct xrt_pose *dst_begin;
+				if (view_space) {
+					dst_begin = &eye_poses[view];
+				} else if (slot_timewarp) {
+					dst_begin = &new_poses_scanout_begin[view];
+				} else {
+					dst_begin = &src_poses[src_i];
+				}
+				render_calc_time_warp_matrix(                        //
+				    &src_poses[src_i],                               //
+				    &src_fovs[src_i],                                //
+				    dst_begin,                                       //
+				    &data->transform_timewarp_scanout_begin[ubo_i]); //
+				render_time_warp_matrix_fold_remap_and_rect(         //
+				    &data->transform_timewarp_scanout_begin[ubo_i], //
+				    &src_rects[src_i]);                              //
+				if (slot_compensated) {
+					render_calc_time_warp_matrix(                      //
+					    &src_poses[src_i],                             //
+					    &src_fovs[src_i],                              //
+					    &new_poses_scanout_end[view],                  //
+					    &data->transform_timewarp_scanout_end[ubo_i]); //
+					render_time_warp_matrix_fold_remap_and_rect(       //
+					    &data->transform_timewarp_scanout_end[ubo_i], //
+					    &src_rects[src_i]);                            //
+				}
+				// Uncompensated slots only read the begin matrix.
+				break;
+			}
+			}
+		}
+	}
+	// The alpha masks travel via spec consts (passed to get_or_create below);
+	// per-pixel checks fold to literals at pipeline-build time.
+
+
+	/*
+	 * Pipeline build (lazy, CPU-side). Done before any command-buffer
+	 * recording so that a failure here returns cleanly without leaving a
+	 * half-transitioned target image in the command buffer.
+	 */
+
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	VkResult ret = render_resources_get_or_create_nlayer_pipeline( //
+	    r,                                                         //
+	    layer_count,                                               //
+	    layer_types,                                               //
+	    unpremultiplied_mask,                                      //
+	    inverted_alpha_mask,                                       //
+	    eye_hidden_mask,                                           //
+	    scanout_compensate_layers_mask,                            //
+	    projection_bounds_test_mask,                               //
+	    do_distortion,                                             //
+	    do_cac,                                                    //
+	    scanout_direction,                                         //
+	    &pipeline);                                                //
+	if (ret != VK_SUCCESS) {
+		U_LOG_E(
+		    "Failed to build nlayer pipeline (N=%u, types=0x%x, unpre=0x%x, inv=0x%x, hidden=0x%x, "
+		    "sc_mask=0x%x, bt_mask=0x%x, d=%d, cac=%d, scanout=%d): %d",
+		    layer_count, layer_types, unpremultiplied_mask, inverted_alpha_mask, eye_hidden_mask,
+		    scanout_compensate_layers_mask, projection_bounds_test_mask, (int)do_distortion, (int)do_cac,
+		    (int)scanout_direction, ret);
+		return false;
+	}
+
+
+	/*
+	 * Image barriers and dispatch.
+	 */
+
+	VkImageSubresourceRange subresource_range = {
+	    .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+	    .baseMipLevel = 0,
+	    .levelCount = VK_REMAINING_MIP_LEVELS,
+	    .baseArrayLayer = 0,
+	    .layerCount = VK_REMAINING_ARRAY_LAYERS,
+	};
+
+	vk_cmd_image_barrier_gpu_locked( //
+	    vk,                          //
+	    r->cmd,                      //
+	    target_image,                //
+	    0,                           //
+	    VK_ACCESS_SHADER_WRITE_BIT,  //
+	    VK_IMAGE_LAYOUT_UNDEFINED,   //
+	    VK_IMAGE_LAYOUT_GENERAL,     //
+	    subresource_range);          //
+
+	VkSampler edge_sampler = r->samplers.clamp_to_edge;
+	VkSampler distortion_samplers[3 * XRT_MAX_VIEWS];
+	for (uint32_t i = 0; i < view_count; ++i) {
+		distortion_samplers[3 * i + 0] = edge_sampler;
+		distortion_samplers[3 * i + 1] = edge_sampler;
+		distortion_samplers[3 * i + 2] = edge_sampler;
+	}
+
+	VkDescriptorSet descriptor_set = r->compute.distortion_nlayer.descriptor_sets[layer_count - 1];
+	VkPipelineLayout pipeline_layout = r->compute.distortion_nlayer.pipeline_layouts[layer_count - 1];
+
+	update_compute_distortion_nlayer_descriptor_set( //
+	    vk,                                          //
+	    descriptor_set,                              //
+	    view_count,                                  //
+	    layer_count,                                 //
+	    src_samplers,                                //
+	    src_image_views,                             //
+	    distortion_samplers,                         //
+	    r->distortion.image_views,                   //
+	    target_image_view,                           //
+	    r->compute.distortion_nlayer.ubo.buffer);    //
+
+	vk->vkCmdBindPipeline(r->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+	vk->vkCmdBindDescriptorSets(            //
+	    r->cmd,                             //
+	    VK_PIPELINE_BIND_POINT_COMPUTE,     //
+	    pipeline_layout,                    //
+	    0,                                  //
+	    1,                                  //
+	    &descriptor_set,                    //
+	    0,                                  //
+	    NULL);                              //
+
+	uint32_t w = 0, h = 0;
+	calc_dispatch_dims_views(views, view_count, &w, &h);
+	assert(w != 0 && h != 0);
+
+	vk->vkCmdDispatch(r->cmd, w, h, view_count);
+
+	VkImageMemoryBarrier memoryBarrier = {
+	    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+	    .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+	    .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT,
+	    .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+	    .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+	    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+	    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+	    .image = target_image,
+	    .subresourceRange = subresource_range,
+	};
+
+	vk->vkCmdPipelineBarrier(                 //
+	    r->cmd,                               //
+	    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, //
+	    VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,    //
+	    0,                                    //
+	    0,                                    //
+	    NULL,                                 //
+	    0,                                    //
+	    NULL,                                 //
+	    1,                                    //
+	    &memoryBarrier);                      //
+
+	return true;
+}
+
 void
 render_compute_clear(struct render_compute *render,
                      VkImage target_image,

@@ -921,7 +921,11 @@ comp_render_gfx_dispatch(struct render_gfx *render,
 	// We want to read from the images afterwards.
 	VkImageLayout transition_to = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-	if (fast_path && layer->data.type == XRT_LAYER_PROJECTION) {
+	// The compositor-level fast_path flag accepts N-layer compositions
+	// (compute path handles them), but the gfx path only implements
+	// single-projection-layer fast paths. Require layer_count == 1 here;
+	// multi-layer stacks fall through to the gfx squasher below.
+	if (fast_path && layer_count == 1 && layer->data.type == XRT_LAYER_PROJECTION) {
 		// Fast path.
 		const struct xrt_layer_projection_data *proj = &layer->data.proj;
 		const struct xrt_layer_projection_view_data *vds[XRT_MAX_VIEWS];
@@ -934,7 +938,7 @@ comp_render_gfx_dispatch(struct render_gfx *render,
 		    layer,                //
 		    vds);                 //
 
-	} else if (fast_path && layer->data.type == XRT_LAYER_PROJECTION_DEPTH) {
+	} else if (fast_path && layer_count == 1 && layer->data.type == XRT_LAYER_PROJECTION_DEPTH) {
 		// Fast path.
 		const struct xrt_layer_projection_depth_data *depth = &layer->data.depth;
 		const struct xrt_layer_projection_view_data *vds[XRT_MAX_VIEWS];

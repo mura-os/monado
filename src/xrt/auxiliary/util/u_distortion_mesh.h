@@ -311,9 +311,10 @@ void
 u_distortion_mesh_fill_in_none(struct xrt_device *xdev);
 
 /*!
- * Given a @ref xrt_device generates a no distortion mesh, also sets
- * `xdev->compute_distortion()` and populates `xdev->hmd_parts.distortion.mesh`
- * & `xdev->hmd_parts.distortion.models`.
+ * Declare the @ref xrt_device as having no display distortion: fills in an
+ * identity mesh and sets `xdev->compute_distortion()` so the mesh-based gfx
+ * compositor stays usable, but marks `distortion.preferred` as
+ * @ref XRT_DISTORTION_MODEL_NONE so the compute compositor skips distortion.
  *
  * @relatesalso xrt_device
  * @ingroup aux_distortion

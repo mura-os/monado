@@ -575,16 +575,15 @@ u_distortion_mesh_set_none(struct xrt_device *xdev)
 {
 	struct xrt_hmd_parts *target = xdev->hmd;
 
-	// Reset to none.
+	// Reset and fill in an identity mesh so the mesh-based gfx compositor stays usable.
 	target->distortion.models = XRT_DISTORTION_MODEL_NONE;
-
 	u_distortion_mesh_fill_in_none(xdev);
+
+	// Signal no preferred distortion; the compute compositor uses this to skip the distortion stage.
+	target->distortion.preferred = XRT_DISTORTION_MODEL_NONE;
 
 	// Make sure that the xdev implements the compute_distortion function.
 	xdev->compute_distortion = u_distortion_mesh_none;
-
-	// Make the target completely usable.
-	target->distortion.models |= XRT_DISTORTION_MODEL_COMPUTE;
 }
 
 
