@@ -361,6 +361,7 @@ create_device(struct vk_bundle *vk, const struct comp_vulkan_arguments *vk_args)
 		ret = vk_create_device(                  //
 		    vk,                                  //
 		    gpu_index,                           //
+		    vk_args->target_info.display_drm_fd, //
 		    only_compute_queue,                  // compute_only
 		    prios[i],                            // global_priority
 		    vk_args->required_device_extensions, //

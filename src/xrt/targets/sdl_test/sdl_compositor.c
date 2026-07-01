@@ -197,6 +197,7 @@ compositor_init_vulkan(struct sdl_compositor *c, enum u_logging_level log_level)
 	    .selected_gpu_index = -1,    // Auto
 	    .client_gpu_index = -1,      // Auto
 	    .timeline_semaphore = true,  // Flag is optional, not a hard requirement.
+	    .target_info = COMP_TARGET_INFO_INIT,
 	};
 
 	struct comp_vulkan_results vk_res = {0};

@@ -16,6 +16,7 @@ add_library(
 	comp_renderer.h
 	comp_settings.c
 	comp_settings.h
+	comp_target.c
 	comp_target.h
 	comp_target_swapchain.c
 	comp_target_swapchain.h

@@ -28,6 +28,7 @@ add_library(
 	comp_swapchain.c
 	comp_sync.h
 	comp_sync.c
+	comp_target_info.h
 	comp_vulkan.h
 	comp_vulkan.c
 	)

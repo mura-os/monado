@@ -14,6 +14,7 @@
 
 #include "util/u_logging.h"
 #include "util/u_extension_list.h"
+#include "util/comp_target_info.h"
 
 #include "vk/vk_helpers.h"
 #include "vk/vk_compositor_flags.h"
@@ -67,6 +68,9 @@ struct comp_vulkan_arguments
 
 	//! Vulkan physical device index for clients to use, -1 for auto.
 	int client_gpu_index;
+
+	//! Information reported by the target.
+	struct comp_target_info target_info;
 };
 
 /*!

@@ -494,7 +494,17 @@ comp_window_direct_wayland_init(struct comp_target *w)
 		return false;
 	}
 
+	COMP_INFO(w->c, "Leased display is on DRM fd %d", w_wayland->selected_device->drm_fd);
+
 	return true;
+}
+
+static void
+comp_window_direct_wayland_get_info(struct comp_target *ct, struct comp_target_info *out)
+{
+	struct comp_window_direct_wayland *w_wayland = (struct comp_window_direct_wayland *)ct;
+	*out = COMP_TARGET_INFO_INIT;
+	out->display_drm_fd = w_wayland->selected_device->drm_fd;
 }
 
 static void
@@ -516,6 +526,7 @@ comp_window_direct_wayland_create(struct comp_compositor *c)
 	w->base.base.flush = comp_window_direct_wayland_flush;
 	w->base.base.init_pre_vulkan = comp_window_direct_wayland_init;
 	w->base.base.init_post_vulkan = comp_window_direct_wayland_init_swapchain;
+	w->base.base.get_info = comp_window_direct_wayland_get_info;
 	w->base.base.set_title = _update_window_title;
 	w->base.base.c = c;
 

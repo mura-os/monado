@@ -757,7 +757,7 @@ vk_fill_in_has_instance_extensions(struct vk_bundle *vk, struct u_extension_list
  * @ingroup aux_vk
  */
 VkResult
-vk_select_physical_device(struct vk_bundle *vk, int forced_index);
+vk_select_physical_device(struct vk_bundle *vk, int forced_index, int display_drm_fd);
 
 /*!
  * Used to enable device features as a argument @ref vk_create_device.
@@ -791,6 +791,7 @@ struct vk_device_features
 XRT_CHECK_RESULT VkResult
 vk_create_device(struct vk_bundle *vk,
                  int forced_index,
+                 int display_drm_fd,
                  bool only_compute,
                  VkQueueGlobalPriorityEXT global_priority,
                  struct u_extension_list *required_device_ext_list,

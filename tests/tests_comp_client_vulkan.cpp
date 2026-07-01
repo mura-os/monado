@@ -131,6 +131,7 @@ TEST_CASE("client_compositor", "[.][needgpu]")
 	    false,
 	    xrt_uuid_t{},
 	    -1,
+	    COMP_TARGET_INFO_INIT /*target_info*/,
 	};
 	vk_bundle vk_bundle_storage{};
 	vk_bundle *vk = &vk_bundle_storage;

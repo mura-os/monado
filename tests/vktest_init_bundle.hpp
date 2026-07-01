@@ -145,8 +145,8 @@ vktest_init_bundle(struct vk_bundle *vk)
 	    false,
 	    xrt_uuid_t{},
 	    -1,
+	    COMP_TARGET_INFO_INIT /*target_info*/,
 	};
-
 	comp_vulkan_results results{};
 	bool success = comp_vulkan_init_bundle(vk, &args, &results);
 

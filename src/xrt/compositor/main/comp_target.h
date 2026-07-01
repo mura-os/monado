@@ -15,6 +15,7 @@
 
 #include "vk/vk_helpers.h"
 
+#include "util/comp_target_info.h"
 #include "util/u_trace_marker.h"
 
 
@@ -180,6 +181,14 @@ struct comp_target
 	 * call @ref create_images after calling this function.
 	 */
 	bool (*init_post_vulkan)(struct comp_target *ct, uint32_t preferred_width, uint32_t preferred_height);
+
+	/*!
+	 * Report information discovered by this target (see @ref
+	 * comp_target_info).
+	 * Called after @ref init_pre_vulkan and before Vulkan device creation.
+	 * Targets with nothing to report use @ref comp_target_get_info_default.
+	 */
+	void (*get_info)(struct comp_target *ct, struct comp_target_info *out);
 
 	/*!
 	 * Is this target ready for image creation?
@@ -395,6 +404,29 @@ comp_target_init_post_vulkan(struct comp_target *ct, uint32_t preferred_width, u
 	COMP_TRACE_MARKER();
 
 	return ct->init_post_vulkan(ct, preferred_width, preferred_height);
+}
+
+/*!
+ * Default @ref comp_target::get_info: reports no target information
+ * (@ref COMP_TARGET_INFO_INIT). Targets with nothing to report use this so the
+ * dispatch never has to null-check the function pointer.
+ *
+ * @public @memberof comp_target
+ * @ingroup comp_main
+ */
+void
+comp_target_get_info_default(struct comp_target *ct, struct comp_target_info *out);
+
+/*!
+ * Query a target's information into @p out.
+ *
+ * @public @memberof comp_target
+ * @ingroup comp_main
+ */
+static inline void
+comp_target_get_info(struct comp_target *ct, struct comp_target_info *out)
+{
+	ct->get_info(ct, out);
 }
 
 /*!

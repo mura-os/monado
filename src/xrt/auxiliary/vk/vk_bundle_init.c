@@ -24,7 +24,13 @@
 #include "vk/vk_queue_builder.h"
 #include "vk/vk_queue_family.h"
 
+#include <inttypes.h>
 #include <stdio.h>
+
+#ifdef XRT_OS_LINUX
+#include <sys/stat.h>
+#include <sys/sysmacros.h>
+#endif
 
 
 /*
@@ -454,25 +460,86 @@ device_debug_print(struct vk_bundle *vk, const VkPhysicalDeviceProperties *pdp, 
 	vk_print_device_info(vk, U_LOGGING_DEBUG, pdp, index, title);
 }
 
+/*!
+ * Try to find the GPU whose DRM primary node matches the display device
+ * referenced by @p drm_fd. The fd's device numbers are extracted via fstat and
+ * compared against each physical device's VK_EXT_physical_device_drm
+ * properties.
+ *
+ * Returns UINT32_MAX if no match is found.
+ */
 static uint32_t
-select_preferred_device(struct vk_bundle *vk, VkPhysicalDevice *devices, uint32_t device_count)
+select_device_by_drm_fd(struct vk_bundle *vk, VkPhysicalDevice *devices, uint32_t device_count, int drm_fd)
+{
+#if defined(XRT_OS_LINUX) && defined(VK_EXT_physical_device_drm)
+	struct stat drm_stat;
+	if (fstat(drm_fd, &drm_stat) != 0) {
+		VK_WARN(vk, "Failed to fstat display DRM fd %d, falling back to default selection", drm_fd);
+		return UINT32_MAX;
+	}
+	int64_t want_major = major(drm_stat.st_rdev);
+	int64_t want_minor = minor(drm_stat.st_rdev);
+
+	for (uint32_t i = 0; i < device_count; i++) {
+		VkPhysicalDeviceDrmPropertiesEXT drm_props = {
+		    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT,
+		};
+		VkPhysicalDeviceProperties2 props2 = {
+		    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+		    .pNext = &drm_props,
+		};
+
+		vk->vkGetPhysicalDeviceProperties2(devices[i], &props2);
+
+		if (drm_props.hasPrimary && drm_props.primaryMajor == want_major &&
+		    drm_props.primaryMinor == want_minor) {
+			VK_DEBUG(vk, "Selected GPU index %u: matches display DRM device %" PRIi64 ":%" PRIi64, i,
+			         want_major, want_minor);
+			return i;
+		}
+	}
+
+	VK_WARN(vk, "No GPU matches display DRM device %" PRIi64 ":%" PRIi64 ", falling back to default selection",
+	        want_major, want_minor);
+#else
+	(void)devices;
+	(void)device_count;
+	(void)drm_fd;
+	VK_DEBUG(vk, "DRM-fd-based GPU selection not available on this platform/build");
+#endif
+	return UINT32_MAX;
+}
+
+static uint32_t
+select_preferred_device(struct vk_bundle *vk, VkPhysicalDevice *devices, uint32_t device_count, int display_drm_fd)
 {
 	assert(device_count > 0);
+
+	if (vk->log_level <= U_LOGGING_DEBUG) {
+		VK_DEBUG(vk, "Available GPUs");
+		for (uint32_t i = 0; i < device_count; i++) {
+			VkPhysicalDeviceProperties pdp;
+			vk->vkGetPhysicalDeviceProperties(devices[i], &pdp);
+			device_debug_print(vk, &pdp, i);
+		}
+	}
+
+	// If a display DRM fd was reported, prefer the GPU that owns it.
+	if (display_drm_fd >= 0) {
+		uint32_t idx = select_device_by_drm_fd(vk, devices, device_count, display_drm_fd);
+		if (idx != UINT32_MAX) {
+			return idx;
+		}
+	}
 
 	// Default to first if there is only one.
 	uint32_t gpu_index = 0;
 	VkPhysicalDeviceProperties gpu_properties;
 	vk->vkGetPhysicalDeviceProperties(devices[0], &gpu_properties);
 
-	// Loop starts at index 1, so print the first GPU here.
-	device_debug_print(vk, &gpu_properties, 0);
-
 	for (uint32_t i = 1; i < device_count; i++) {
 		VkPhysicalDeviceProperties pdp;
 		vk->vkGetPhysicalDeviceProperties(devices[i], &pdp);
-
-		// Print GPU 1 to device_count here.
-		device_debug_print(vk, &pdp, i);
 
 		// Prefer devices based on device type priority, with preference to equal devices with smaller index
 		if (device_is_preferred(&pdp, &gpu_properties)) {
@@ -485,7 +552,7 @@ select_preferred_device(struct vk_bundle *vk, VkPhysicalDevice *devices, uint32_
 }
 
 static VkResult
-select_physical_device(struct vk_bundle *vk, int forced_index)
+select_physical_device(struct vk_bundle *vk, int forced_index, int display_drm_fd)
 {
 	VkPhysicalDevice *physical_devices = NULL;
 	uint32_t gpu_count = 0;
@@ -517,8 +584,7 @@ select_physical_device(struct vk_bundle *vk, int forced_index)
 		gpu_index = uint_index;
 		VK_DEBUG(vk, "Forced use of Vulkan device index %u.", gpu_index);
 	} else {
-		VK_DEBUG(vk, "Available GPUs");
-		gpu_index = select_preferred_device(vk, physical_devices, gpu_count);
+		gpu_index = select_preferred_device(vk, physical_devices, gpu_count, display_drm_fd);
 	}
 
 	// Setup the physical device on the bundle.
@@ -862,14 +928,15 @@ vk_insert_get_queue(struct vk_bundle *vk, const struct vk_queue_pair *new_queue)
  */
 
 VkResult
-vk_select_physical_device(struct vk_bundle *vk, int forced_index)
+vk_select_physical_device(struct vk_bundle *vk, int forced_index, int display_drm_fd)
 {
-	return select_physical_device(vk, forced_index);
+	return select_physical_device(vk, forced_index, display_drm_fd);
 }
 
 XRT_CHECK_RESULT VkResult
 vk_create_device(struct vk_bundle *vk,
                  int forced_index,
+                 int display_drm_fd,
                  bool only_compute,
                  VkQueueGlobalPriorityEXT global_priority,
                  struct u_extension_list *required_device_ext_list,
@@ -879,7 +946,7 @@ vk_create_device(struct vk_bundle *vk,
 	struct u_extension_list *device_ext_list = NULL;
 	VkResult ret;
 
-	ret = select_physical_device(vk, forced_index);
+	ret = select_physical_device(vk, forced_index, display_drm_fd);
 	VK_CHK_WITH_GOTO(ret, "select_physical_device", err_destroy);
 
 	ret = vk_build_device_extensions_with_skip( //

@@ -755,6 +755,11 @@ compositor_init_vulkan(struct comp_compositor *c)
 	 * Create the device.
 	 */
 
+	struct comp_target_info target_info = COMP_TARGET_INFO_INIT;
+	if (c->target != NULL) {
+		comp_target_get_info(c->target, &target_info);
+	}
+
 	struct comp_vulkan_arguments vk_args = {
 	    .get_instance_proc_address = vkGetInstanceProcAddr,
 	    .required_instance_version = required_instance_version,
@@ -766,6 +771,7 @@ compositor_init_vulkan(struct comp_compositor *c)
 	    .only_compute_queue = c->settings.use_compute,
 	    .selected_gpu_index = c->settings.selected_gpu_index,
 	    .client_gpu_index = c->settings.client_gpu_index,
+	    .target_info = target_info,
 	    .timeline_semaphore = true, // Flag is optional, not a hard requirement.
 	};
 
