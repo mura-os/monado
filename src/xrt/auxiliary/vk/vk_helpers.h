@@ -239,7 +239,14 @@ struct vk_bundle
 		uint32_t max_per_stage_descriptor_sampled_images;
 
 		//! Per stage limit on storage images.
-		uint32_t max_per_stage_descriptor_storage_images;	} limits;
+		uint32_t max_per_stage_descriptor_storage_images;
+
+		//! Maximum number of components of output variables in the vertex stage.
+		uint32_t max_vertex_output_components;
+
+		//! Maximum number of components of input variables in the fragment stage.
+		uint32_t max_fragment_input_components;
+	} limits;
 
 	//! Is the GPU a tegra device.
 	bool is_tegra;

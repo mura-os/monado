@@ -10,6 +10,8 @@
 
 #include "vk/vk_mini_helpers.h"
 
+#include "util/u_logging.h"
+
 #include "render/render_interface.h"
 
 #include <stdio.h>
@@ -660,26 +662,31 @@ struct mesh_params
 	uint32_t do_timewarp;
 };
 
+/*!
+ * Pipeline state shared by the classic mesh distortion shaders and the
+ * N-layer mesh composite variant; only shader modules and specialization
+ * infos differ.
+ */
 XRT_CHECK_RESULT static VkResult
-create_mesh_pipeline(struct vk_bundle *vk,
-                     VkRenderPass render_pass,
-                     VkFormat color_format,
-                     VkPipelineLayout pipeline_layout,
-                     VkPipelineCache pipeline_cache,
-                     uint32_t src_binding,
-                     uint32_t mesh_index_count_total,
-                     uint32_t mesh_stride,
-                     const struct mesh_params *params,
-                     VkShaderModule mesh_vert,
-                     VkShaderModule mesh_frag,
-                     VkPipeline *out_mesh_pipeline)
+create_mesh_pipeline_internal(struct vk_bundle *vk,
+                              VkRenderPass render_pass,
+                              VkFormat color_format,
+                              VkPipelineLayout pipeline_layout,
+                              VkPipelineCache pipeline_cache,
+                              uint32_t src_binding,
+                              uint32_t mesh_index_count_total,
+                              uint32_t mesh_stride,
+                              const VkSpecializationInfo *vert_specialization_info,
+                              const VkSpecializationInfo *frag_specialization_info,
+                              VkShaderModule mesh_vert,
+                              VkShaderModule mesh_frag,
+                              VkPipeline *out_mesh_pipeline)
 {
 	VkResult ret;
 
 	// Might be changed to line for debugging.
 	VkPolygonMode polygonMode = VK_POLYGON_MODE_FILL;
 
-	// Do we use triangle strips or triangles with indices.
 	VkPrimitiveTopology topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	if (mesh_index_count_total > 0) {
 		topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
@@ -776,37 +783,19 @@ create_mesh_pipeline(struct vk_bundle *vk,
 	};
 	// clang-format on
 
-#define ENTRY(ID, FIELD)                                                                                               \
-	{                                                                                                              \
-	    .constantID = ID,                                                                                          \
-	    .offset = offsetof(struct mesh_params, FIELD),                                                             \
-	    .size = sizeof(params->FIELD),                                                                             \
-	}
-
-	VkSpecializationMapEntry vert_entries[] = {
-	    ENTRY(0, do_timewarp),
-	};
-#undef ENTRY
-
-	VkSpecializationInfo vert_specialization_info = {
-	    .mapEntryCount = ARRAY_SIZE(vert_entries),
-	    .pMapEntries = vert_entries,
-	    .dataSize = sizeof(*params),
-	    .pData = params,
-	};
-
 	VkPipelineShaderStageCreateInfo shader_stages[2] = {
 	    {
 	        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 	        .stage = VK_SHADER_STAGE_VERTEX_BIT,
 	        .module = mesh_vert,
-	        .pSpecializationInfo = &vert_specialization_info,
+	        .pSpecializationInfo = vert_specialization_info,
 	        .pName = "main",
 	    },
 	    {
 	        .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 	        .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
 	        .module = mesh_frag,
+	        .pSpecializationInfo = frag_specialization_info,
 	        .pName = "main",
 	    },
 	};
@@ -857,6 +846,193 @@ create_mesh_pipeline(struct vk_bundle *vk,
 	*out_mesh_pipeline = pipeline;
 
 	return VK_SUCCESS;
+}
+
+XRT_CHECK_RESULT static VkResult
+create_mesh_pipeline(struct vk_bundle *vk,
+                     VkRenderPass render_pass,
+                     VkFormat color_format,
+                     VkPipelineLayout pipeline_layout,
+                     VkPipelineCache pipeline_cache,
+                     uint32_t src_binding,
+                     uint32_t mesh_index_count_total,
+                     uint32_t mesh_stride,
+                     const struct mesh_params *params,
+                     VkShaderModule mesh_vert,
+                     VkShaderModule mesh_frag,
+                     VkPipeline *out_mesh_pipeline)
+{
+#define ENTRY(ID, FIELD)                                                                                               \
+	{                                                                                                              \
+	    .constantID = ID,                                                                                          \
+	    .offset = offsetof(struct mesh_params, FIELD),                                                             \
+	    .size = sizeof(params->FIELD),                                                                             \
+	}
+
+	VkSpecializationMapEntry vert_entries[] = {
+	    ENTRY(0, do_timewarp),
+	};
+#undef ENTRY
+
+	VkSpecializationInfo vert_specialization_info = {
+	    .mapEntryCount = ARRAY_SIZE(vert_entries),
+	    .pMapEntries = vert_entries,
+	    .dataSize = sizeof(*params),
+	    .pData = params,
+	};
+
+	return create_mesh_pipeline_internal( //
+	    vk,                               //
+	    render_pass,                      //
+	    color_format,                     //
+	    pipeline_layout,                  //
+	    pipeline_cache,                   //
+	    src_binding,                      //
+	    mesh_index_count_total,           //
+	    mesh_stride,                      //
+	    &vert_specialization_info,        //
+	    NULL,                             //
+	    mesh_vert,                        //
+	    mesh_frag,                        //
+	    out_mesh_pipeline);               //
+}
+
+
+/*
+ *
+ * Mesh N-layer composite (single-shader fast path).
+ *
+ */
+
+/*!
+ * Specialization data for one mesh_nlayer.frag / mesh_nlayer.vert pipeline
+ * variant. Field order defines the spec map offsets; the constant ids match
+ * distortion_nlayer.comp's (see compute_distortion_nlayer_params in
+ * render_resources.c), minus id 0 (the distortion LUT texel count; the mesh
+ * carries the distortion here) plus the gfx-only id 11 (warp varying count,
+ * see mesh_nlayer_warp.inc.glsl).
+ */
+struct mesh_nlayer_params
+{
+	uint32_t projection_bounds_test_mask; // id 1 (frag)
+	int32_t view_count;                 // id 2 (frag)
+	VkBool32 do_distortion;             // id 3 (vert identity-UV switch, frag chroma/mono select)
+	int32_t layer_count;                // id 4
+	int32_t scanout_direction;          // id 5 (vert)
+	uint32_t layer_types;               // id 6
+	uint32_t layer_unpremult_mask;      // id 7 (frag)
+	uint32_t layer_inverted_alpha_mask; // id 8 (frag)
+	uint32_t eye_hidden_mask;           // id 9 (frag)
+	VkBool32 do_cac;                    // id 10
+	// Gfx-only ids: warp varying array element count (the result of
+	// render_gfx_nlayer_warp_count) and the per-slot scanout mask.
+	int32_t warp_count;                      // id 11
+	uint32_t scanout_compensate_layers_mask; // id 12
+};
+
+XRT_CHECK_RESULT static VkResult
+create_mesh_nlayer_pipeline(struct vk_bundle *vk,
+                            VkRenderPass render_pass,
+                            VkFormat color_format,
+                            VkPipelineLayout pipeline_layout,
+                            VkPipelineCache pipeline_cache,
+                            uint32_t src_binding,
+                            uint32_t mesh_index_count_total,
+                            uint32_t mesh_stride,
+                            const struct mesh_nlayer_params *params,
+                            VkShaderModule mesh_vert,
+                            VkShaderModule mesh_frag,
+                            VkPipeline *out_mesh_pipeline)
+{
+#define ENTRY(ID, FIELD)                                                                                               \
+	{                                                                                                              \
+	    .constantID = ID,                                                                                          \
+	    .offset = offsetof(struct mesh_nlayer_params, FIELD),                                                      \
+	    .size = sizeof(params->FIELD),                                                                             \
+	}
+
+	// One map for both stages; Vulkan ignores entries whose id a module
+	// does not declare, and a single list can't go stale against the
+	// shaders' per-stage declarations.
+	VkSpecializationMapEntry entries[] = {
+	    ENTRY(1, projection_bounds_test_mask),    //
+	    ENTRY(2, view_count),                     //
+	    ENTRY(3, do_distortion),                  //
+	    ENTRY(4, layer_count),                    //
+	    ENTRY(5, scanout_direction),              //
+	    ENTRY(6, layer_types),                    //
+	    ENTRY(7, layer_unpremult_mask),           //
+	    ENTRY(8, layer_inverted_alpha_mask),      //
+	    ENTRY(9, eye_hidden_mask),                //
+	    ENTRY(10, do_cac),                        //
+	    ENTRY(11, warp_count),                    //
+	    ENTRY(12, scanout_compensate_layers_mask) //
+	};
+#undef ENTRY
+
+	VkSpecializationInfo specialization_info = {
+	    .mapEntryCount = ARRAY_SIZE(entries),
+	    .pMapEntries = entries,
+	    .dataSize = sizeof(*params),
+	    .pData = params,
+	};
+
+	return create_mesh_pipeline_internal( //
+	    vk,                               //
+	    render_pass,                      //
+	    color_format,                     //
+	    pipeline_layout,                  //
+	    pipeline_cache,                   //
+	    src_binding,                      //
+	    mesh_index_count_total,           //
+	    mesh_stride,                      //
+	    &specialization_info,             //
+	    &specialization_info,             //
+	    mesh_vert,                        //
+	    mesh_frag,                        //
+	    out_mesh_pipeline);               //
+}
+
+// Pack the variant key for linear-search lookup. The scanout mask does not
+// fit the packed 64-bit form anymore, so the key is two words; the first
+// keeps the compute cache's nlayer_pipeline_key bit layout, with bit 1
+// unused:
+//   lo[0]      do_distortion       (1 bit)
+//   lo[2..4]   scanout_direction   (3 bits, values 0..4)
+//   lo[5..8]   layer_count         (4 bits, values 0..8)
+//   lo[9..24]  layer_types         (16 bits, 2 bits/slot * 8 slots)
+//   lo[25..32] unpremult_mask      (8 bits, 1 bit/slot * 8 slots)
+//   lo[33..40] inverted_alpha_mask (8 bits, 1 bit/slot * 8 slots)
+//   lo[41..56] eye_hidden_mask     (16 bits, 2 bits/slot * 8 slots)
+//   lo[57]     do_cac              (1 bit; ignored when do_distortion == false)
+//   hi[0..7]   scanout_compensate_layers_mask (8 bits, 1 bit/slot * 8 slots)
+//   hi[8..15]  projection_bounds_test_mask    (8 bits, 1 bit/slot * 8 slots)
+// Inputs must already be canonicalized by the getter.
+static inline void
+gfx_nlayer_pipeline_key(uint32_t layer_count,
+                        uint32_t layer_types,
+                        uint32_t unpremult_mask,
+                        uint32_t inverted_alpha_mask,
+                        uint32_t eye_hidden_mask,
+                        uint32_t scanout_compensate_layers_mask,
+                        uint32_t projection_bounds_test_mask,
+                        bool do_distortion,
+                        bool do_cac,
+                        enum xrt_scanout_direction scanout_direction,
+                        uint64_t out_key[2])
+{
+	do_cac = do_distortion && do_cac;
+
+	out_key[0] = ((uint64_t)(do_cac ? 1u : 0u) << 57) |  //
+	             ((uint64_t)eye_hidden_mask << 41) |     //
+	             ((uint64_t)inverted_alpha_mask << 33) | //
+	             ((uint64_t)unpremult_mask << 25) |      //
+	             ((uint64_t)layer_types << 9) |          //
+	             ((uint64_t)layer_count << 5) |          //
+	             ((uint64_t)scanout_direction << 2) |    //
+	             ((uint64_t)(do_distortion ? 1u : 0u));  //
+	out_key[1] = ((uint64_t)projection_bounds_test_mask << 8) | //
+	             ((uint64_t)scanout_compensate_layers_mask);    //
 }
 
 
@@ -1048,6 +1224,11 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	VK_NAME_PIPELINE(vk, rgrp->layer.quad_unpremultiplied_alpha,
 	                 "render_gfx_render_pass quad unpremultiplied alpha");
 
+	// Gfx N-layer fast path: pipelines are lazy-built per variant by
+	// render_gfx_render_pass_get_or_create_nlayer_pipeline, nothing to
+	// create eagerly. Enabled only when the static per-N layouts exist.
+	rgrp->nlayer.enabled = r->gfx.nlayer.enabled && r->gfx.nlayer.effective_nlayer_max > 0;
+
 	// Set fields.
 	rgrp->r = r;
 	rgrp->format = format;
@@ -1076,7 +1257,162 @@ render_gfx_render_pass_fini(struct render_gfx_render_pass *rgrp)
 	D(Pipeline, rgrp->layer.quad_premultiplied_alpha);
 	D(Pipeline, rgrp->layer.quad_unpremultiplied_alpha);
 
+	for (uint32_t i = 0; i < rgrp->nlayer.pipeline_count; ++i) {
+		D(Pipeline, rgrp->nlayer.pipelines[i].pipeline);
+	}
+	rgrp->nlayer.pipeline_count = 0;
+
 	U_ZERO(rgrp);
+}
+
+XRT_CHECK_RESULT VkResult
+render_gfx_render_pass_get_or_create_nlayer_pipeline(struct render_gfx_render_pass *rgrp,
+                                                     uint32_t layer_count,
+                                                     uint32_t layer_types,
+                                                     uint32_t unpremult_mask,
+                                                     uint32_t inverted_alpha_mask,
+                                                     uint32_t eye_hidden_mask,
+                                                     uint32_t scanout_compensate_layers_mask,
+                                                     uint32_t projection_bounds_test_mask,
+                                                     bool do_distortion,
+                                                     bool do_cac,
+                                                     enum xrt_scanout_direction scanout_direction,
+                                                     VkPipeline *out_pipeline)
+{
+	struct render_resources *r = rgrp->r;
+
+	if (!rgrp->nlayer.enabled) {
+		U_LOG_E("gfx nlayer pipeline: fast path not enabled");
+		return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+	}
+	if (layer_count < 1 || layer_count > r->gfx.nlayer.effective_nlayer_max) {
+		U_LOG_E("gfx nlayer pipeline: layer_count %u out of range [1, %u]", layer_count,
+		        r->gfx.nlayer.effective_nlayer_max);
+		return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+	}
+	if ((uint32_t)scanout_direction >= 5) {
+		U_LOG_E("gfx nlayer pipeline: scanout_direction %d out of range [0, 4]", (int)scanout_direction);
+		return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+	}
+
+	// Mask off any bits the shader can't see (slots >= layer_count), so
+	// callers passing garbage in unused bits don't fork extra pipeline
+	// variants.
+	const uint32_t type_used_bits = layer_count * RENDER_NLAYER_TYPE_BITS;
+	const uint32_t type_used_mask = (type_used_bits >= 32) ? 0xFFFFFFFFu : ((1u << type_used_bits) - 1u);
+	layer_types &= type_used_mask;
+	eye_hidden_mask &= type_used_mask; // same 2-bits-per-slot width as layer_types
+	const uint32_t slot_used_mask = (layer_count >= 32) ? 0xFFFFFFFFu : ((1u << layer_count) - 1u);
+	unpremult_mask &= slot_used_mask;
+	inverted_alpha_mask &= slot_used_mask;
+
+	do_cac = do_distortion && do_cac;
+
+	// Projection slots (type code 0) among the used slots; with the other
+	// axes this decides the warp varying array size (id 11). Derived from
+	// the already-masked layer_types so it can never disagree with what
+	// the shader's per-slot dispatch sees.
+	uint32_t proj_slots = 0;
+	uint32_t proj_slot_count = 0;
+	for (uint32_t i = 0; i < layer_count; i++) {
+		uint32_t slot_type = (layer_types >> (i * RENDER_NLAYER_TYPE_BITS)) & 3u;
+		if (slot_type == (uint32_t)RENDER_NLAYER_TYPE_PROJECTION) {
+			proj_slots |= 1u << i;
+			proj_slot_count++;
+		}
+	}
+
+	// Only projection slots consume the mask; dead bits must not fork variants.
+	projection_bounds_test_mask &= proj_slots;
+
+	// Scanout-mask canonicalization (a set bit disables compensation for
+	// that slot): a global-flash display compensates nothing, and a
+	// variant compensating nothing is a global-flash variant.
+	scanout_compensate_layers_mask &= slot_used_mask;
+	if (scanout_direction == XRT_SCANOUT_DIRECTION_NONE) {
+		scanout_compensate_layers_mask = slot_used_mask;
+	}
+	if (scanout_compensate_layers_mask == slot_used_mask) {
+		scanout_direction = XRT_SCANOUT_DIRECTION_NONE;
+	}
+
+	// Shared non-projection ray classes actually present, mirroring the
+	// shader's warp_have_uncomp_rays / warp_have_comp_rays derivation.
+	const uint32_t nonproj_slots = slot_used_mask & ~proj_slots;
+	const uint32_t ray_class_count = //
+	    ((nonproj_slots & scanout_compensate_layers_mask) != 0 ? 1u : 0u) +
+	    ((nonproj_slots & ~scanout_compensate_layers_mask) != 0 ? 1u : 0u);
+
+	uint32_t warp_count = render_gfx_nlayer_warp_count( //
+	    do_cac,                                         //
+	    proj_slot_count,                                //
+	    ray_class_count);                               //
+	if (warp_count > r->gfx.nlayer.max_warp_count) {
+		U_LOG_E("gfx nlayer pipeline: variant needs %u warp elements, device budget is %u", warp_count,
+		        r->gfx.nlayer.max_warp_count);
+		return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+	}
+
+	uint64_t key[2];
+	gfx_nlayer_pipeline_key(layer_count, layer_types, unpremult_mask, inverted_alpha_mask, eye_hidden_mask,
+	                        scanout_compensate_layers_mask, projection_bounds_test_mask, do_distortion, do_cac,
+	                        scanout_direction, key);
+
+	for (uint32_t i = 0; i < rgrp->nlayer.pipeline_count; ++i) {
+		if (rgrp->nlayer.pipelines[i].key[0] == key[0] && rgrp->nlayer.pipelines[i].key[1] == key[1]) {
+			*out_pipeline = rgrp->nlayer.pipelines[i].pipeline;
+			return VK_SUCCESS;
+		}
+	}
+
+	if (rgrp->nlayer.pipeline_count >= RENDER_NLAYER_PIPELINE_CACHE_CAP) {
+		U_LOG_E("gfx nlayer pipeline cache full (%u variants); bump RENDER_NLAYER_PIPELINE_CACHE_CAP",
+		        (uint32_t)RENDER_NLAYER_PIPELINE_CACHE_CAP);
+		return VK_ERROR_OUT_OF_DEVICE_MEMORY;
+	}
+
+	struct mesh_nlayer_params params = {
+	    .projection_bounds_test_mask = projection_bounds_test_mask,
+	    .view_count = (int32_t)r->view_count,
+	    .do_distortion = do_distortion ? VK_TRUE : VK_FALSE,
+	    .layer_count = (int32_t)layer_count,
+	    .scanout_direction = (int32_t)scanout_direction,
+	    .layer_types = layer_types,
+	    .layer_unpremult_mask = unpremult_mask,
+	    .layer_inverted_alpha_mask = inverted_alpha_mask,
+	    .eye_hidden_mask = eye_hidden_mask,
+	    .do_cac = do_cac ? VK_TRUE : VK_FALSE,
+	    .warp_count = (int32_t)warp_count,
+	    .scanout_compensate_layers_mask = scanout_compensate_layers_mask,
+	};
+
+	VkPipeline pipeline = VK_NULL_HANDLE;
+	VkResult ret = create_mesh_nlayer_pipeline(          //
+	    r->vk,                                           //
+	    rgrp->render_pass,                               //
+	    rgrp->format,                                    //
+	    r->gfx.nlayer.pipeline_layouts[layer_count - 1], //
+	    r->pipeline_cache,                               //
+	    r->mesh.src_binding,                             //
+	    r->mesh.index_count_total,                       //
+	    r->mesh.stride,                                  //
+	    &params,                                         //
+	    r->shaders->mesh_nlayer_vert,                    //
+	    r->shaders->mesh_nlayer_frag,                    //
+	    &pipeline);                                      //
+	if (ret != VK_SUCCESS) {
+		return ret;
+	}
+
+	VK_NAME_PIPELINE(r->vk, pipeline, "render_gfx_render_pass nlayer pipeline");
+
+	uint32_t slot = rgrp->nlayer.pipeline_count++;
+	rgrp->nlayer.pipelines[slot].key[0] = key[0];
+	rgrp->nlayer.pipelines[slot].key[1] = key[1];
+	rgrp->nlayer.pipelines[slot].pipeline = pipeline;
+
+	*out_pipeline = pipeline;
+	return VK_SUCCESS;
 }
 
 
@@ -1215,6 +1551,14 @@ render_gfx_fini(struct render_gfx *render)
 	    vk->device,                         //
 	    r->gfx.ubo_and_src_descriptor_pool, //
 	    0);                                 //
+
+	// Also the gfx N-layer fast path's sets, pool only exists when enabled.
+	if (r->gfx.nlayer.descriptor_pool != VK_NULL_HANDLE) {
+		vk->vkResetDescriptorPool(         //
+		    vk->device,                    //
+		    r->gfx.nlayer.descriptor_pool, //
+		    0);                            //
+	}
 
 	// This "reclaims" the allocated UBOs.
 	U_ZERO(render);
@@ -1363,6 +1707,86 @@ render_gfx_mesh_alloc_and_write(struct render_gfx *render,
 	    out_descriptor_set);                //
 }
 
+XRT_CHECK_RESULT VkResult
+render_gfx_mesh_nlayer_alloc_and_write(struct render_gfx *render,
+                                       const struct render_gfx_mesh_nlayer_ubo_data *data,
+                                       uint32_t layer_count,
+                                       const VkSampler *src_samplers,
+                                       const VkImageView *src_image_views,
+                                       VkDescriptorSet *out_descriptor_set)
+{
+	struct render_resources *r = render->r;
+	struct vk_bundle *vk = vk_from_render(render);
+	VkResult ret;
+
+	assert(layer_count >= 1 && layer_count <= r->gfx.nlayer.effective_nlayer_max);
+
+	struct render_sub_alloc ubo = XRT_STRUCT_INIT;
+	ret = render_sub_alloc_ubo_alloc_and_write( //
+	    vk,                                     //
+	    &render->ubo_tracker,                   //
+	    data,                                   //
+	    sizeof(*data),                          //
+	    &ubo);                                  //
+	VK_CHK_AND_RET(ret, "render_sub_alloc_ubo_alloc_and_write");
+
+	VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
+	ret = vk_create_descriptor_set(                            //
+	    vk,                                                    //
+	    r->gfx.nlayer.descriptor_pool,                         //
+	    r->gfx.nlayer.descriptor_set_layouts[layer_count - 1], //
+	    &descriptor_set);                                      //
+	VK_CHK_AND_RET(ret, "vk_create_descriptor_set");
+
+	// Source slots: exactly layer_count * view_count entries, the layout
+	// this set was allocated from declares the matching descriptorCount.
+	VkDescriptorImageInfo src_image_info[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+	const uint32_t src_count = layer_count * r->view_count;
+	for (uint32_t i = 0; i < src_count; ++i) {
+		src_image_info[i] = (VkDescriptorImageInfo){
+		    .sampler = src_samplers[i],
+		    .imageView = src_image_views[i],
+		    .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+		};
+	}
+
+	VkDescriptorBufferInfo buffer_info = {
+	    .buffer = ubo.buffer,
+	    .offset = ubo.offset,
+	    .range = ubo.size,
+	};
+
+	VkWriteDescriptorSet write_descriptor_sets[2] = {
+	    {
+	        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+	        .dstSet = descriptor_set,
+	        .dstBinding = r->mesh.src_binding,
+	        .descriptorCount = src_count,
+	        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	        .pImageInfo = src_image_info,
+	    },
+	    {
+	        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+	        .dstSet = descriptor_set,
+	        .dstBinding = r->mesh.ubo_binding,
+	        .descriptorCount = 1,
+	        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+	        .pBufferInfo = &buffer_info,
+	    },
+	};
+
+	vk->vkUpdateDescriptorSets(            //
+	    vk->device,                        //
+	    ARRAY_SIZE(write_descriptor_sets), // descriptorWriteCount
+	    write_descriptor_sets,             // pDescriptorWrites
+	    0,                                 // descriptorCopyCount
+	    NULL);                             // pDescriptorCopies
+
+	*out_descriptor_set = descriptor_set;
+
+	return VK_SUCCESS;
+}
+
 void
 render_gfx_mesh_draw(struct render_gfx *render, uint32_t mesh_index, VkDescriptorSet descriptor_set, bool do_timewarp)
 {
@@ -1427,6 +1851,80 @@ render_gfx_mesh_draw(struct render_gfx *render, uint32_t mesh_index, VkDescripto
 		    r->mesh.index_counts[mesh_index],  // indexCount
 		    1,                                 // instanceCount
 		    r->mesh.index_offsets[mesh_index], // firstIndex
+		    0,                                 // vertexOffset
+		    0);                                // firstInstance
+	} else {
+		vk->vkCmdDraw(            //
+		    r->cmd,               //
+		    r->mesh.vertex_count, // vertexCount
+		    1,                    // instanceCount
+		    0,                    // firstVertex
+		    0);                   // firstInstance
+	}
+}
+
+void
+render_gfx_mesh_nlayer_draw(struct render_gfx *render,
+                            uint32_t view_index,
+                            uint32_t layer_count,
+                            VkDescriptorSet descriptor_set,
+                            VkPipeline pipeline)
+{
+	struct vk_bundle *vk = vk_from_render(render);
+	struct render_resources *r = render->r;
+
+	assert(pipeline != VK_NULL_HANDLE);
+	assert(layer_count >= 1 && layer_count <= r->gfx.nlayer.effective_nlayer_max);
+
+	VkPipelineLayout pipeline_layout = r->gfx.nlayer.pipeline_layouts[layer_count - 1];
+
+	VkDescriptorSet descriptor_sets[1] = {descriptor_set};
+	vk->vkCmdBindDescriptorSets(         //
+	    r->cmd,                          //
+	    VK_PIPELINE_BIND_POINT_GRAPHICS, // pipelineBindPoint
+	    pipeline_layout,                 // layout
+	    0,                               // firstSet
+	    ARRAY_SIZE(descriptor_sets),     // descriptorSetCount
+	    descriptor_sets,                 // pDescriptorSets
+	    0,                               // dynamicOffsetCount
+	    NULL);                           // pDynamicOffsets
+
+	// The shader's view selector, the gfx gl_GlobalInvocationID.z.
+	vk->vkCmdPushConstants(                                        //
+	    r->cmd,                                                    //
+	    pipeline_layout,                                           //
+	    VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, //
+	    0,                                                         // offset
+	    sizeof(view_index),                                        // size
+	    &view_index);                                              // pValues
+
+	vk->vkCmdBindPipeline(               //
+	    r->cmd,                          //
+	    VK_PIPELINE_BIND_POINT_GRAPHICS, // pipelineBindPoint
+	    pipeline);                       // pipeline
+
+	VkBuffer buffers[1] = {r->mesh.vbo.buffer};
+	VkDeviceSize offsets[1] = {0};
+
+	vk->vkCmdBindVertexBuffers( //
+	    r->cmd,                 //
+	    0,                      // firstBinding
+	    ARRAY_SIZE(buffers),    // bindingCount
+	    buffers,                // pBuffers
+	    offsets);               // pOffsets
+
+	if (r->mesh.index_count_total > 0) {
+		vk->vkCmdBindIndexBuffer(  //
+		    r->cmd,                //
+		    r->mesh.ibo.buffer,    // buffer
+		    0,                     // offset
+		    VK_INDEX_TYPE_UINT32); // indexType
+
+		vk->vkCmdDrawIndexed(                  //
+		    r->cmd,                            //
+		    r->mesh.index_counts[view_index],  // indexCount
+		    1,                                 // instanceCount
+		    r->mesh.index_offsets[view_index], // firstIndex
 		    0,                                 // vertexOffset
 		    0);                                // firstInstance
 	} else {

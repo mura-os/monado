@@ -8,7 +8,8 @@
 
 include(ShaderSpecialization)
 
-set(DEPENDS blit.inc.glsl hsv.inc.glsl layer_defines.inc.glsl srgb.inc.glsl)
+set(DEPENDS blit.inc.glsl hsv.inc.glsl layer_defines.inc.glsl mesh_nlayer.inc.glsl mesh_nlayer_warp.inc.glsl
+    srgb.inc.glsl)
 
 set(SHADERS
     blit.comp
@@ -19,6 +20,8 @@ set(SHADERS
     layer.comp
     mesh.frag
     mesh.vert
+    mesh_nlayer.vert
+    mesh_nlayer.frag
     layer_cylinder.frag
     layer_cylinder.vert
     layer_equirect2.frag

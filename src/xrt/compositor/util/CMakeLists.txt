@@ -41,4 +41,5 @@ target_link_libraries(
 		aux_vk
 		aux_render
 		aux_shaders
+		xrt-external-vulkan-utility
 	)

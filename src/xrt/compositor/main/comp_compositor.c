@@ -281,6 +281,20 @@ compositor_discard_frame(struct xrt_compositor *xc, int64_t frame_id)
 	return XRT_SUCCESS;
 }
 
+void
+comp_compositor_get_dispatch_flags(struct comp_compositor *c,
+                                   bool *out_do_timewarp,
+                                   bool *out_do_distortion,
+                                   bool *out_do_cac)
+{
+	bool do_distortion = c->xdev->hmd->distortion.preferred != XRT_DISTORTION_MODEL_NONE;
+	bool device_wants_cac = !c->xdev->hmd->distortion.no_chromatic_aberration_correction;
+
+	*out_do_timewarp = !c->debug.atw_off;
+	*out_do_distortion = do_distortion;
+	*out_do_cac = do_distortion && device_wants_cac && !c->debug.cac_off;
+}
+
 /*!
  * Eligibility test for the layer fast paths, which bypass the layer squasher.
  *
@@ -288,8 +302,9 @@ compositor_discard_frame(struct xrt_compositor *xc, int64_t frame_id)
  * projection (incl. depth variant), quad, cylinder, equirect2. Routing between
  * the 1-layer and N-layer dispatches happens in comp_render_cs_dispatch.
  *
- * Gfx: only the single-projection-layer fast path is implemented, so exactly
- * one projection layer is accepted.
+ * Gfx: exactly one projection layer is accepted, unless the experimental
+ * N-layer fast path is enabled (XRT_GFX_NLAYER) which accepts the same layer
+ * set as compute, bounded by the per-variant warp varying budget.
  *
  * In both cases layers using features the distortion shaders can't represent
  * (chroma key, color bias/scale) are rejected.
@@ -301,6 +316,40 @@ can_do_projection_layer_fast_path(struct comp_compositor *c)
 
 	if (c->settings.use_compute) {
 		if (layer_count < 1 || layer_count > c->nr.compute.distortion_nlayer.effective_nlayer_max) {
+			return false;
+		}
+	} else if (c->nr.gfx.nlayer.enabled) {
+		// Gfx N-layer fast path (experimental): same type set as
+		// compute, checked by the shared loop below.
+		if (layer_count < 1 || layer_count > c->nr.gfx.nlayer.effective_nlayer_max) {
+			return false;
+		}
+
+		// The warp varying interface is exactly sized per variant, so
+		// the location budget depends on this frame's layer mix and
+		// dispatch flags. Mirrors crg_nlayer_varyings_fit so a granted
+		// fast path never bounces off the dispatch-time check.
+		uint32_t proj_slot_count = 0;
+		for (uint32_t i = 0; i < layer_count; ++i) {
+			enum xrt_layer_type type = c->base.layer_accum.layers[i].data.type;
+			if (type == XRT_LAYER_PROJECTION || type == XRT_LAYER_PROJECTION_DEPTH) {
+				proj_slot_count++;
+			}
+		}
+
+		bool do_timewarp;
+		bool do_distortion;
+		bool do_cac;
+		comp_compositor_get_dispatch_flags(c, &do_timewarp, &do_distortion, &do_cac);
+
+		// Two-ray-class upper bound; the exact per-slot masks are only
+		// derived at dispatch, and the exact count never exceeds this.
+		uint32_t nonproj_slot_count = layer_count - proj_slot_count;
+		uint32_t warp_count = render_gfx_nlayer_warp_count( //
+		    do_distortion && do_cac,                        //
+		    proj_slot_count,                                //
+		    MIN(2, nonproj_slot_count));                    //
+		if (warp_count > c->nr.gfx.nlayer.max_warp_count) {
 			return false;
 		}
 	} else {

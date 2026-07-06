@@ -243,6 +243,21 @@ comp_compositor_set_rendering(struct comp_compositor *c, bool rendering)
 }
 
 /*!
+ * The frame flags the renderer will dispatch with: timewarp, mesh distortion,
+ * per-channel chromatic aberration correction. Derived from device
+ * capabilities and the debug toggles. comp_renderer_draw dispatches with
+ * exactly these; the fast-path eligibility test mirrors them so a granted
+ * fast path is always achievable.
+ *
+ * @relates comp_compositor
+ */
+void
+comp_compositor_get_dispatch_flags(struct comp_compositor *c,
+                                   bool *out_do_timewarp,
+                                   bool *out_do_distortion,
+                                   bool *out_do_cac);
+
+/*!
  * Helper define for printing Vulkan errors.
  *
  * @relates comp_compositor

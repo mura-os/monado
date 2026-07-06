@@ -168,6 +168,8 @@ fill_in_device_features(struct vk_bundle *vk, const uint32_t queue_family_index)
 	vk->limits.max_per_stage_descriptor_samplers = pdp.limits.maxPerStageDescriptorSamplers;
 	vk->limits.max_per_stage_descriptor_sampled_images = pdp.limits.maxPerStageDescriptorSampledImages;
 	vk->limits.max_per_stage_descriptor_storage_images = pdp.limits.maxPerStageDescriptorStorageImages;
+	vk->limits.max_vertex_output_components = pdp.limits.maxVertexOutputComponents;
+	vk->limits.max_fragment_input_components = pdp.limits.maxFragmentInputComponents;
 
 
 	/*

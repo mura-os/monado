@@ -1194,10 +1194,10 @@ comp_renderer_draw(struct comp_renderer *r)
 	enum comp_target_fov_source fov_source = COMP_TARGET_FOV_SOURCE_DISTORTION;
 
 	bool fast_path = !clear_and_pause && c->base.frame_params.one_projection_layer_fast_path;
-	bool do_timewarp = !c->debug.atw_off;
-	bool do_distortion = c->xdev->hmd->distortion.preferred != XRT_DISTORTION_MODEL_NONE;
-	bool device_wants_cac = !c->xdev->hmd->distortion.no_chromatic_aberration_correction;
-	bool do_cac = do_distortion && device_wants_cac && !c->debug.cac_off;
+	bool do_timewarp;
+	bool do_distortion;
+	bool do_cac;
+	comp_compositor_get_dispatch_flags(c, &do_timewarp, &do_distortion, &do_cac);
 
 	// Consistency check.
 	assert(!fast_path || c->base.layer_accum.layer_count >= 1);

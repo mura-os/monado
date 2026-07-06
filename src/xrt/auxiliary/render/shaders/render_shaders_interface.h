@@ -34,6 +34,13 @@ struct render_shaders
 	VkShaderModule mesh_vert;
 	VkShaderModule mesh_frag;
 
+	/*
+	 * Gfx N-layer fast path (single-shader composite).
+	 */
+
+	VkShaderModule mesh_nlayer_vert;
+	VkShaderModule mesh_nlayer_frag;
+
 
 	/*
 	 * New layer renderer.

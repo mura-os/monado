@@ -15,6 +15,8 @@
 #include "math/m_matrix_2x2.h"
 #include "math/m_vec2.h"
 
+#include "util/u_debug.h"
+
 #include "vk/vk_mini_helpers.h"
 
 #include "render/render_interface.h"
@@ -24,6 +26,14 @@
 
 
 #include <stdio.h>
+
+
+DEBUG_GET_ONCE_BOOL_OPTION(gfx_nlayer, "XRT_GFX_NLAYER", true)
+
+//! How many gfx N-layer composites one frame can hold; sizes the dedicated
+//! descriptor pool and the UBO headroom. Today the dispatch runs once per
+//! frame; the second slot is defensive headroom.
+#define GFX_NLAYER_MAX_DISPATCHES (2)
 
 
 /*
@@ -69,6 +79,95 @@ create_gfx_ubo_and_src_descriptor_set_layout(struct vk_bundle *vk,
 	VK_CHK_AND_RET(ret, "vkCreateDescriptorSetLayout");
 
 	*out_descriptor_set_layout = descriptor_set_layout;
+
+	return VK_SUCCESS;
+}
+
+/*!
+ * Descriptor set layout for one gfx N-layer pipeline variant with
+ * `layer_count` layers: src_binding holds exactly layer_count * view_count
+ * combined image samplers (fragment stage), ubo_binding the shared UBO
+ * (vertex + fragment). Gfx twin of
+ * create_compute_distortion_nlayer_descriptor_set_layout.
+ */
+XRT_CHECK_RESULT static VkResult
+create_gfx_nlayer_descriptor_set_layout(struct vk_bundle *vk,
+                                        uint32_t ubo_binding,
+                                        uint32_t src_binding,
+                                        uint32_t layer_count,
+                                        uint32_t view_count,
+                                        VkDescriptorSetLayout *out_descriptor_set_layout)
+{
+	VkResult ret;
+
+	VkDescriptorSetLayoutBinding set_layout_bindings[2] = {
+	    {
+	        .binding = src_binding,
+	        .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+	        .descriptorCount = layer_count * view_count,
+	        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+	    },
+	    {
+	        .binding = ubo_binding,
+	        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+	        .descriptorCount = 1,
+	        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+	    },
+	};
+
+	VkDescriptorSetLayoutCreateInfo set_layout_info = {
+	    .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+	    .bindingCount = ARRAY_SIZE(set_layout_bindings),
+	    .pBindings = set_layout_bindings,
+	};
+
+	VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE;
+	ret = vk->vkCreateDescriptorSetLayout(vk->device,              //
+	                                      &set_layout_info,        //
+	                                      NULL,                    //
+	                                      &descriptor_set_layout); //
+	VK_CHK_AND_RET(ret, "vkCreateDescriptorSetLayout");
+
+	*out_descriptor_set_layout = descriptor_set_layout;
+
+	return VK_SUCCESS;
+}
+
+/*!
+ * Pipeline layout for the gfx N-layer pipelines: one descriptor set plus a
+ * single uint push constant carrying the view index of the draw (the gfx
+ * stand-in for the compute shader's gl_GlobalInvocationID.z), visible to
+ * both stages.
+ */
+XRT_CHECK_RESULT static VkResult
+create_gfx_nlayer_pipeline_layout(struct vk_bundle *vk,
+                                  VkDescriptorSetLayout descriptor_set_layout,
+                                  VkPipelineLayout *out_pipeline_layout)
+{
+	VkResult ret;
+
+	VkPushConstantRange push_constant_range = {
+	    .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+	    .offset = 0,
+	    .size = sizeof(uint32_t),
+	};
+
+	VkPipelineLayoutCreateInfo pipeline_layout_info = {
+	    .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+	    .setLayoutCount = 1,
+	    .pSetLayouts = &descriptor_set_layout,
+	    .pushConstantRangeCount = 1,
+	    .pPushConstantRanges = &push_constant_range,
+	};
+
+	VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+	ret = vk->vkCreatePipelineLayout(vk->device,            //
+	                                 &pipeline_layout_info, //
+	                                 NULL,                  //
+	                                 &pipeline_layout);     //
+	VK_CHK_AND_RET(ret, "vkCreatePipelineLayout");
+
+	*out_pipeline_layout = pipeline_layout;
 
 	return VK_SUCCESS;
 }
@@ -743,6 +842,39 @@ render_resources_init(struct render_resources *r,
 	 * Gfx.
 	 */
 
+	// The gfx N-layer fast path only allocates resources when enabled.
+	r->gfx.nlayer.enabled = debug_get_bool_option_gfx_nlayer();
+
+	// Cap the path to whatever the device can actually host: each pipeline
+	// variant binds `N * view_count` combined image samplers on the fragment
+	// stage. The Vulkan minimum limits (16) always cover RENDER_NLAYER_MAX=8
+	// at stereo, so this only bites on hypothetical view_count growth.
+	if (r->gfx.nlayer.enabled) {
+		uint32_t per_stage_budget = MIN(vk->limits.max_per_stage_descriptor_samplers,
+		                                vk->limits.max_per_stage_descriptor_sampled_images);
+		uint32_t budget_n = per_stage_budget / r->view_count;
+
+		r->gfx.nlayer.effective_nlayer_max = MIN((uint32_t)RENDER_NLAYER_MAX, budget_n);
+
+		// The vertex->fragment interface budget depends on the variant
+		// (channel count, timewarp, layer types) — the warp varying
+		// array is exactly sized — so no worst-case N cap here; the
+		// per-dispatch element count is checked against this budget
+		// instead, see render_gfx_nlayer_warp_count. One location (4
+		// components) per array element, with one vertex location
+		// reserved for gl_Position — a vertex-output-only cost, hence
+		// the per-stage split.
+		uint32_t vert_locations = vk->limits.max_vertex_output_components / 4;
+		uint32_t frag_locations = vk->limits.max_fragment_input_components / 4;
+		r->gfx.nlayer.max_warp_count = MIN(vert_locations - 1, frag_locations);
+
+		U_LOG_I(
+		    "gfx nlayer fast path: effective max N = %u (compile cap %u, device per-stage budget %u, "
+		    "warp budget %u elements, view_count %u)",
+		    r->gfx.nlayer.effective_nlayer_max, (uint32_t)RENDER_NLAYER_MAX, per_stage_budget,
+		    r->gfx.nlayer.max_warp_count, r->view_count);
+	}
+
 	{
 		// Number of layer shader runs (views) times number of layers.
 		const uint32_t layer_shader_count = RENDER_MAX_LAYER_RUNS_COUNT(r) * RENDER_MAX_LAYERS;
@@ -786,6 +918,20 @@ render_resources_init(struct render_resources *r,
 
 		// Calculate size.
 		VkDeviceSize size = buffer_count * RENDER_ALWAYS_SAFE_UBO_ALIGNMENT;
+
+		// The gfx N-layer fast path sub-allocates one multi-slot UBO per
+		// dispatch from this same buffer; add space for as many dispatches
+		// as its descriptor pool has sets.
+		if (r->gfx.nlayer.enabled) {
+			// Fits any device: 16384 is the guaranteed minimum for
+			// maxUniformBufferRange.
+			static_assert(sizeof(struct render_gfx_mesh_nlayer_ubo_data) <= 16384, "MAX");
+
+			VkDeviceSize nlayer_size = sizeof(struct render_gfx_mesh_nlayer_ubo_data);
+			nlayer_size += RENDER_ALWAYS_SAFE_UBO_ALIGNMENT - 1;
+			nlayer_size &= ~((VkDeviceSize)RENDER_ALWAYS_SAFE_UBO_ALIGNMENT - 1);
+			size += GFX_NLAYER_MAX_DISPATCHES * nlayer_size;
+		}
 
 		ret = render_buffer_init(  //
 		    vk,                    // vk_bundle
@@ -866,6 +1012,64 @@ render_resources_init(struct render_resources *r,
 	    r->mesh.ubos, r->view_count); //
 	if (!bret) {
 		return false;
+	}
+
+
+	/*
+	 * Gfx N-layer fast path static resources: one descriptor set layout +
+	 * pipeline layout per supported layer_count value (index [N-1]), and a
+	 * dedicated per-frame-reset descriptor pool. Mirrors the compute path's
+	 * distortion_nlayer block below; pipelines are lazy-built per variant
+	 * and live in the render pass (render_gfx_render_pass::nlayer).
+	 */
+
+	if (r->gfx.nlayer.enabled) {
+		const uint32_t gfx_nlayer_max = r->gfx.nlayer.effective_nlayer_max;
+
+		for (uint32_t i = 0; i < gfx_nlayer_max; ++i) {
+			ret = create_gfx_nlayer_descriptor_set_layout( //
+			    vk,                                        //
+			    r->mesh.ubo_binding,                       //
+			    r->mesh.src_binding,                       //
+			    i + 1,                                     // layer_count
+			    r->view_count,                             //
+			    &r->gfx.nlayer.descriptor_set_layouts[i]); //
+			VK_CHK_WITH_RET(ret, "create_gfx_nlayer_descriptor_set_layout", false);
+
+			VK_NAME_DESCRIPTOR_SET_LAYOUT(vk, r->gfx.nlayer.descriptor_set_layouts[i],
+			                              "render_resources gfx nlayer descriptor set layout");
+
+			ret = create_gfx_nlayer_pipeline_layout(     //
+			    vk,                                      //
+			    r->gfx.nlayer.descriptor_set_layouts[i], //
+			    &r->gfx.nlayer.pipeline_layouts[i]);     //
+			VK_CHK_WITH_RET(ret, "create_gfx_nlayer_pipeline_layout", false);
+
+			VK_NAME_PIPELINE_LAYOUT(vk, r->gfx.nlayer.pipeline_layouts[i],
+			                        "render_resources gfx nlayer pipeline layout");
+		}
+
+		if (gfx_nlayer_max > 0) {
+			// Sized for the largest per-set value (N=gfx_nlayer_max); the
+			// pool over-allocates a small constant for smaller-N sets.
+			struct vk_descriptor_pool_info nlayer_pool_info = {
+			    .uniform_per_descriptor_count = 1,
+			    .sampler_per_descriptor_count = gfx_nlayer_max * r->view_count,
+			    .storage_image_per_descriptor_count = 0,
+			    .storage_buffer_per_descriptor_count = 0,
+			    .descriptor_count = GFX_NLAYER_MAX_DISPATCHES,
+			    .freeable = false,
+			};
+
+			ret = vk_create_descriptor_pool(     //
+			    vk,                              //
+			    &nlayer_pool_info,               //
+			    &r->gfx.nlayer.descriptor_pool); //
+			VK_CHK_WITH_RET(ret, "vk_create_descriptor_pool", false);
+
+			VK_NAME_DESCRIPTOR_POOL(vk, r->gfx.nlayer.descriptor_pool,
+			                        "render_resources gfx nlayer descriptor pool");
+		}
 	}
 
 
@@ -1285,6 +1489,12 @@ render_resources_fini(struct render_resources *r)
 
 	D(DescriptorSetLayout, r->gfx.layer.shared.descriptor_set_layout);
 	D(PipelineLayout, r->gfx.layer.shared.pipeline_layout);
+
+	D(DescriptorPool, r->gfx.nlayer.descriptor_pool);
+	for (uint32_t i = 0; i < r->gfx.nlayer.effective_nlayer_max; ++i) {
+		D(DescriptorSetLayout, r->gfx.nlayer.descriptor_set_layouts[i]);
+		D(PipelineLayout, r->gfx.nlayer.pipeline_layouts[i]);
+	}
 
 	D(DescriptorSetLayout, r->mesh.descriptor_set_layout);
 	D(PipelineLayout, r->mesh.pipeline_layout);

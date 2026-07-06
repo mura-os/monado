@@ -89,19 +89,22 @@ extern "C" {
 #define RENDER_MAX_LAYER_RUNS_COUNT(RENDER_RESOURCES) (RENDER_RESOURCES->view_count)
 
 /*!
- * Compile-time upper bound on the N-layer fast path's layer count. Sizes the
- * static arrays of per-N descriptor set layouts / pipeline layouts /
- * descriptor sets, and is the absolute ceiling for the shader's UBO. The
- * actual runtime cap is `effective_nlayer_max` (see struct
- * `render_resources::compute::distortion_nlayer`), which may be lower when
- * device per-stage descriptor limits would not host this many. Must match
- * MAX_NLAYER in distortion_nlayer.comp.
+ * Compile-time upper bound on the N-layer fast paths' layer count, for both
+ * the compute and the gfx variant. Sizes the static arrays of per-N
+ * descriptor set layouts / pipeline layouts / descriptor sets, and is the
+ * absolute ceiling for the shaders' UBOs. The actual runtime caps are the
+ * `effective_nlayer_max` fields (see structs
+ * `render_resources::compute::distortion_nlayer` and
+ * `render_resources::gfx::nlayer`), which may be lower when device per-stage
+ * descriptor limits would not host this many. Must match MAX_NLAYER in
+ * distortion_nlayer.comp and mesh_nlayer.inc.glsl.
  */
 #define RENDER_NLAYER_MAX (8)
 
 /*!
- * Capacity of the per-variant pipeline cache for the N-layer fast path.
- * Variant key is (layer_count, layer_types,
+ * Capacity of the per-variant pipeline caches for the N-layer fast paths
+ * (the compute one in @ref render_resources, the gfx one per
+ * @ref render_gfx_render_pass). Variant key is (layer_count, layer_types,
  * layer_unpremult_mask, layer_inverted_alpha_mask,
  * scanout_compensate_layers_mask, do_distortion, do_cac, scanout_direction);
  * apps typically cycle through <30 patterns per session
@@ -138,6 +141,65 @@ extern "C" {
  * for layer composition (layer.comp)
  */
 #define RENDER_CS_MAX_SAMPLERS_PER_VIEW 2
+
+
+/*
+ *
+ * N-layer fast path shared types, used by both the compute
+ * (distortion_nlayer.comp) and the gfx (mesh_nlayer.frag) variant.
+ *
+ */
+
+/*!
+ * Per-slot layer-type encoding for the N-layer fast paths' @c layer_types
+ * spec constant. 2 bits per slot; must match the LAYER_TYPE_* defines in
+ * distortion_nlayer.comp and mesh_nlayer.frag.
+ */
+enum render_nlayer_type
+{
+	RENDER_NLAYER_TYPE_PROJECTION = 0,
+	RENDER_NLAYER_TYPE_QUAD = 1,
+	RENDER_NLAYER_TYPE_CYLINDER = 2,
+	RENDER_NLAYER_TYPE_EQUIRECT2 = 3,
+};
+
+//! Bits per slot in the packed @c layer_types spec constant.
+#define RENDER_NLAYER_TYPE_BITS (2)
+
+/*!
+ * Per-(layer, view) quad data for the N-layer fast paths. Layout must match
+ * the `QuadData` struct in distortion_nlayer.comp and mesh_nlayer.inc.glsl
+ * under std140 (each vec3 padded to 16, mat4 at offset 32, vec2 + 8 bytes
+ * tail padding → 112 bytes total).
+ */
+struct render_compute_nlayer_quad_data
+{
+	struct xrt_vec3 position;
+	float _pad0;
+	struct xrt_vec3 normal;
+	float _pad1;
+	struct xrt_matrix_4x4 inverse_transform;
+	struct xrt_vec2 extent;
+	float _pad2[2];
+};
+
+/*!
+ * Per-(layer, view) cylinder / equirect2 ("wrap") data for the N-layer fast
+ * paths. Layout must match the `WrapData` struct in distortion_nlayer.comp
+ * and mesh_nlayer.inc.glsl under std140 (mat4 at offset 0, vec4 at offset 64
+ * → 80 bytes total).
+ *
+ * `mv_inverse` = model_inv * view_inv. `params` is interpreted per-type:
+ *   cylinder:  (radius, central_angle, aspect_ratio, _)
+ *   equirect2: (radius, central_horizontal_angle, upper_vertical_angle,
+ *               lower_vertical_angle)
+ */
+struct render_compute_nlayer_wrap_data
+{
+	struct xrt_matrix_4x4 mv_inverse;
+	float params[4];
+};
+
 
 /*
  *
@@ -471,6 +533,61 @@ struct render_resources
 				VkPipelineLayout pipeline_layout;
 			} shared;
 		} layer;
+
+		/*!
+		 * Gfx N-layer fast path (XRT_GFX_NLAYER): composites up to
+		 * effective_nlayer_max layers in a single fragment shader
+		 * (mesh_nlayer.vert + mesh_nlayer.frag), one draw per view,
+		 * mirroring the compute path's distortion_nlayer.comp.
+		 *
+		 * Like @ref render_resources::compute::distortion_nlayer this
+		 * keeps one descriptor set layout per layer_count value:
+		 * binding 0 holds exactly `layer_count * view_count` combined
+		 * image samplers (fragment stage, flat-indexed as
+		 * [layer * view_count + view]), binding 1 the shared UBO
+		 * (vertex + fragment). Each pipeline layout adds a single uint
+		 * push constant carrying the view index — the gfx stand-in for
+		 * the compute shader's gl_GlobalInvocationID.z. Pipelines
+		 * depend on the render pass and live in
+		 * @ref render_gfx_render_pass::nlayer.
+		 */
+		struct
+		{
+			//! XRT_GFX_NLAYER env option, on by default.
+			bool enabled;
+
+			/*!
+			 * Maximum N actually supported on this device, in
+			 * [0, RENDER_NLAYER_MAX]. The fragment stage binds
+			 * `N * view_count` combined image samplers, so the
+			 * budget is the smaller per-stage sampler /
+			 * sampled-image limit divided by view_count. Zero when
+			 * the path is disabled; then no layouts/pool exist.
+			 *
+			 * The vertex->fragment interface bounds each variant
+			 * too, but that need depends on the variant — check
+			 * @ref render_gfx_nlayer_warp_count against
+			 * max_warp_count per dispatch.
+			 */
+			uint32_t effective_nlayer_max;
+
+			/*!
+			 * Device budget for the warp varying array element
+			 * count. One whole location (4 components) per array
+			 * element — elements consume whole locations before
+			 * any driver packing. One vertex location is reserved
+			 * for gl_Position, which counts against the vertex
+			 * output limit only; the fragment stage declares no
+			 * built-in inputs.
+			 */
+			uint32_t max_warp_count;
+
+			VkDescriptorSetLayout descriptor_set_layouts[RENDER_NLAYER_MAX];
+			VkPipelineLayout pipeline_layouts[RENDER_NLAYER_MAX];
+
+			//! Pool for the per-frame descriptor sets, reset each frame.
+			VkDescriptorPool descriptor_pool;
+		} nlayer;
 	} gfx;
 
 	struct
@@ -895,6 +1012,33 @@ struct render_gfx_render_pass
 		VkPipeline quad_premultiplied_alpha;
 		VkPipeline quad_unpremultiplied_alpha;
 	} layer;
+
+	/*!
+	 * Gfx N-layer fast path: all layers composited by a single fragment
+	 * shader (mesh_nlayer.vert + mesh_nlayer.frag), one draw per view,
+	 * blending disabled — the gfx twin of the compute path's
+	 * distortion_nlayer.comp. Only used when enabled (XRT_GFX_NLAYER env
+	 * option, on by default).
+	 *
+	 * layer_count / layer_types / the alpha masks are spec constants, so
+	 * pipelines are lazy-built per variant with the same key semantics as
+	 * @ref render_resources_get_or_create_nlayer_pipeline; they depend on
+	 * this render pass, which is why the cache lives here instead of in
+	 * @ref render_resources.
+	 */
+	struct
+	{
+		bool enabled;
+
+		//! Per-variant pipeline cache, built lazily on first use.
+		struct
+		{
+			//! Two packed words, see gfx_nlayer_pipeline_key().
+			uint64_t key[2];
+			VkPipeline pipeline;
+		} pipelines[RENDER_NLAYER_PIPELINE_CACHE_CAP];
+		uint32_t pipeline_count;
+	} nlayer;
 };
 
 /*!
@@ -1071,6 +1215,30 @@ struct render_gfx_mesh_ubo_data
 };
 
 /*!
+ * UBO for the gfx N-layer fast path (mesh_nlayer.vert + mesh_nlayer.frag):
+ * per-view shared state plus per-(layer, view) transforms, flat-indexed as
+ * [layer * XRT_MAX_VIEWS + view]. Must match the Config block in
+ * mesh_nlayer.inc.glsl. Everything except vertex_rot mirrors
+ * @ref render_compute_distortion_nlayer_ubo_data — see there for field docs,
+ * including the projection-slot matrix and post_transforms semantics; the
+ * compute UBO's views[] (target offsets/extents) has no gfx equivalent since
+ * the viewport covers that.
+ *
+ * @relates render_gfx
+ */
+struct render_gfx_mesh_nlayer_ubo_data
+{
+	struct xrt_matrix_2x2 vertex_rot[XRT_MAX_VIEWS];
+	struct xrt_normalized_rect pre_transforms[XRT_MAX_VIEWS];
+	struct xrt_matrix_4x4 scanout_view_rot_delta[XRT_MAX_VIEWS];
+	struct xrt_normalized_rect post_transforms[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+	struct xrt_matrix_4x4 transform_timewarp_scanout_begin[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+	struct xrt_matrix_4x4 transform_timewarp_scanout_end[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+	struct render_compute_nlayer_quad_data quads[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+	struct render_compute_nlayer_wrap_data wraps[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+};
+
+/*!
  * UBO data that is sent to the layer cylinder shader.
  *
  * @relates render_gfx
@@ -1156,6 +1324,24 @@ render_gfx_mesh_alloc_and_write(struct render_gfx *render,
                                 VkSampler src_sampler,
                                 VkImageView src_image_view,
                                 VkDescriptorSet *out_descriptor_set);
+
+/*!
+ * Allocate and write the UBO and descriptor set for one N-layer composite,
+ * serving all views: binding 0 gets @p layer_count * view_count
+ * (sampler, image view) pairs flat-indexed as [layer * view_count + view],
+ * binding 1 the UBO. See @ref render_gfx_mesh_alloc_and_write for lifetime
+ * details; the descriptor set comes from the dedicated
+ * @ref render_resources::gfx::nlayer pool, also reset each frame.
+ *
+ * @public @memberof render_gfx
+ */
+XRT_CHECK_RESULT VkResult
+render_gfx_mesh_nlayer_alloc_and_write(struct render_gfx *render,
+                                       const struct render_gfx_mesh_nlayer_ubo_data *data,
+                                       uint32_t layer_count,
+                                       const VkSampler *src_samplers,
+                                       const VkImageView *src_image_views,
+                                       VkDescriptorSet *out_descriptor_set);
 
 /*!
  * Allocate and write a UBO and descriptor_set to be used for cylinder layer
@@ -1275,6 +1461,83 @@ render_gfx_end_view(struct render_gfx *render);
  */
 void
 render_gfx_mesh_draw(struct render_gfx *render, uint32_t mesh_index, VkDescriptorSet descriptor_set, bool do_timewarp);
+
+/*!
+ * Element count of the gfx N-layer warp varying array for a pipeline variant
+ * — the value of the warp_count spec constant (id 11). Must mirror the block
+ * layout in mesh_nlayer_warp.inc.glsl: one element set per projection slot
+ * (every projection carries its own source mapping, timewarped or static),
+ * then one shared non-projection ray set per scanout class in use. Callers
+ * route to another path when the result exceeds
+ * @ref render_resources::gfx::nlayer::max_warp_count.
+ *
+ * @param do_chroma       Per-channel chromatic aberration sampling, i.e.
+ *                        do_distortion && do_cac: 3 channels instead of 1.
+ * @param proj_slot_count Projection layers in the dispatch.
+ * @param ray_class_count Shared non-projection ray classes in use
+ *                        (uncompensated and/or scanout-compensated), 0..2.
+ *                        Eligibility checks running before the per-slot masks
+ *                        exist pass the upper bound
+ *                        MIN(2, nonproj_slot_count); the exact count never
+ *                        exceeds it, so a granted fast path always fits.
+ */
+static inline uint32_t
+render_gfx_nlayer_warp_count(bool do_chroma, uint32_t proj_slot_count, uint32_t ray_class_count)
+{
+	uint32_t channels = do_chroma ? 3 : 1;
+	return channels * (proj_slot_count + ray_class_count);
+}
+
+/*!
+ * Get or lazily create the N-layer composite pipeline variant for this render
+ * pass. Same failure contract, @p scanout_compensate_layers_mask semantics
+ * and mask canonicalization as
+ * @ref render_resources_get_or_create_nlayer_pipeline. Requires
+ * @ref render_gfx_render_pass::nlayer to be enabled (XRT_GFX_NLAYER) and the
+ * variant's warp varyings to fit the device budget, see
+ * @ref render_gfx_nlayer_warp_count.
+ *
+ * A set bit in @p projection_bounds_test_mask makes that projection slot
+ * bounds-test its source UVs (spec id 1). Only clear a bit when border
+ * sampling already handles out-of-FOV correctly for the slot: the rect
+ * covers the whole image, and it is bottom-most, blends with plain source
+ * alpha, or covers the display FOV. Bits on non-projection slots are
+ * canonicalized away.
+ *
+ * @public @memberof render_gfx_render_pass
+ */
+XRT_CHECK_RESULT VkResult
+render_gfx_render_pass_get_or_create_nlayer_pipeline(struct render_gfx_render_pass *rgrp,
+                                                     uint32_t layer_count,
+                                                     uint32_t layer_types,
+                                                     uint32_t unpremult_mask,
+                                                     uint32_t inverted_alpha_mask,
+                                                     uint32_t eye_hidden_mask,
+                                                     uint32_t scanout_compensate_layers_mask,
+                                                     uint32_t projection_bounds_test_mask,
+                                                     bool do_distortion,
+                                                     bool do_cac,
+                                                     enum xrt_scanout_direction scanout_direction,
+                                                     VkPipeline *out_pipeline);
+
+/*!
+ * Draw the N-layer composite for one view: one indexed draw of the view's
+ * distortion mesh; the vertex shader runs the warp stage, the fragment
+ * shader samples and blends every layer. @p view_index doubles as the mesh
+ * index and the shader's view selector (push constant). Get
+ * @p pipeline from
+ * @ref render_gfx_render_pass_get_or_create_nlayer_pipeline and
+ * @p descriptor_set from @ref render_gfx_mesh_nlayer_alloc_and_write, both
+ * with the same @p layer_count.
+ *
+ * @public @memberof render_gfx
+ */
+void
+render_gfx_mesh_nlayer_draw(struct render_gfx *render,
+                            uint32_t view_index,
+                            uint32_t layer_count,
+                            VkDescriptorSet descriptor_set,
+                            VkPipeline pipeline);
 
 /*!
  * Dispatch a cylinder layer shader into the current target and view.
@@ -1535,39 +1798,6 @@ struct render_compute_distortion_ubo_data
 };
 
 /*!
- * Per-(layer, view) quad data for the N-layer fast path. Layout must match
- * the `QuadData` struct in distortion_nlayer.comp under std140 (each vec3
- * padded to 16, mat4 at offset 32, vec2 + 8 bytes tail padding → 112 bytes
- * total).
- */
-struct render_compute_nlayer_quad_data
-{
-	struct xrt_vec3 position;
-	float _pad0;
-	struct xrt_vec3 normal;
-	float _pad1;
-	struct xrt_matrix_4x4 inverse_transform;
-	struct xrt_vec2 extent;
-	float _pad2[2];
-};
-
-/*!
- * Per-(layer, view) cylinder / equirect2 ("wrap") data for the N-layer fast
- * path. Layout must match the `WrapData` struct in distortion_nlayer.comp
- * under std140 (mat4 at offset 0, vec4 at offset 64 → 80 bytes total).
- *
- * `mv_inverse` = model_inv * view_inv. `params` is interpreted per-type:
- *   cylinder:  (radius, central_angle, aspect_ratio, _)
- *   equirect2: (radius, central_horizontal_angle, upper_vertical_angle,
- *               lower_vertical_angle)
- */
-struct render_compute_nlayer_wrap_data
-{
-	struct xrt_matrix_4x4 mv_inverse;
-	float params[4];
-};
-
-/*!
  * UBO for the N-layer fast path. `pre_transforms` is shared across layers
  * (one entry per view, display-FOV-derived); `post_transforms`, timewarp
  * matrices, `quads`, and `wraps` are flat arrays indexed as
@@ -1706,22 +1936,6 @@ render_compute_projection_no_timewarp(struct render_compute *render,
                                       VkImageView target_image_view,
                                       VkImageLayout target_final_layout,
                                       const struct render_viewport_data views[XRT_MAX_VIEWS]);
-
-/*!
- * Per-slot layer-type encoding for the N-layer fast path's @c layer_types
- * spec constant. 2 bits per slot; must match the LAYER_TYPE_* defines in
- * distortion_nlayer.comp.
- */
-enum render_nlayer_type
-{
-	RENDER_NLAYER_TYPE_PROJECTION = 0,
-	RENDER_NLAYER_TYPE_QUAD = 1,
-	RENDER_NLAYER_TYPE_CYLINDER = 2,
-	RENDER_NLAYER_TYPE_EQUIRECT2 = 3,
-};
-
-//! Bits per slot in the packed @c layer_types spec constant.
-#define RENDER_NLAYER_TYPE_BITS (2)
 
 /*!
  * Composites up to @p layer_count projection / quad / cylinder / equirect2
