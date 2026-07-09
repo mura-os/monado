@@ -199,6 +199,9 @@ struct vk_bundle
 		//! Was synchronization2 requested, available, and enabled?
 		bool synchronization_2;
 
+		//! Was dynamic rendering requested, available, and enabled?
+		bool dynamic_rendering;
+
 		//! Was KHR_present_id requested, available, and enabled?
 		bool present_id;
 
@@ -771,6 +774,7 @@ struct vk_device_features
 	bool null_descriptor;
 	bool timeline_semaphore;
 	bool synchronization_2;
+	bool dynamic_rendering;
 	bool ext_fmt_resolve;
 	bool storage_buffer_8bit_access;
 	bool present_id;

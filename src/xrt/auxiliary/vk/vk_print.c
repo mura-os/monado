@@ -146,11 +146,13 @@ vk_print_features_info(struct vk_bundle *vk, enum u_logging_level log_level)
 	          "\n\ttimestamp_compute_and_graphics: %s"                        //
 	          "\n\ttimestamp_period: %f"                                      //
 	          "\n\ttimestamp_valid_bits: %u"                                  //
-	          "\n\ttimeline_semaphore: %s",                                   //
+	          "\n\ttimeline_semaphore: %s"                                    //
+	          "\n\tdynamic_rendering: %s",                                    //
 	          vk->features.timestamp_compute_and_graphics ? "true" : "false", //
 	          vk->features.timestamp_period,                                  //
 	          vk->features.timestamp_valid_bits,                              //
-	          vk->features.timeline_semaphore ? "true" : "false");            //
+	          vk->features.timeline_semaphore ? "true" : "false",             //
+	          vk->features.dynamic_rendering ? "true" : "false");             //
 }
 
 void

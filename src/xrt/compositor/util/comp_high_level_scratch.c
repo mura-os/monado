@@ -92,12 +92,14 @@ chl_scratch_ensure(struct chl_scratch *scratch,
 			 * source. In other words the sRGB image view for the
 			 * non-linear formats.
 			 */
+			VkImage target_image = chl_scratch_get_image(scratch, i, k);
 			VkImageView target_image_view = chl_scratch_get_sample_view(scratch, i, k);
 
 			render_gfx_target_resources_init(  //
 			    &scratch->views[i].targets[k], // rtr
 			    rr,                            // struct render_resources
 			    &scratch->render_pass,         // struct render_gfx_render_pass
+			    target_image,                  // target_image
 			    target_image_view,             // target
 			    extent);                       // extent
 		}

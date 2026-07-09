@@ -627,6 +627,15 @@ static const char *optional_device_extensions[] = {
 #ifdef VK_KHR_present_wait2
     VK_KHR_PRESENT_WAIT_2_EXTENSION_NAME,
 #endif
+#ifdef VK_KHR_dynamic_rendering
+    // VK_KHR_dynamic_rendering plus its dependency chain; the whole chain must
+    // be enabled together per VUID-vkCreateDevice-ppEnabledExtensionNames-01387
+    // (VK_KHR_maintenance2 is already in this list below).
+    VK_KHR_MULTIVIEW_EXTENSION_NAME,
+    VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME,
+    VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME,
+    VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME,
+#endif
 #ifdef VK_KHR_format_feature_flags2
     VK_KHR_FORMAT_FEATURE_FLAGS_2_EXTENSION_NAME,
 #endif

@@ -158,28 +158,155 @@ create_framebuffer(struct vk_bundle *vk,
 	return VK_SUCCESS;
 }
 
+#ifdef VK_KHR_dynamic_rendering
+/*!
+ * Transition @p image into COLOR_ATTACHMENT_OPTIMAL and begin a dynamic
+ * rendering instance. The load op is CLEAR for all current callers, so the
+ * previous contents are discarded (old layout UNDEFINED). srcStageMask matches
+ * the render-pass fallback's external subpass dependency, so this orders after
+ * the swapchain acquire semaphore (signalled at COLOR_ATTACHMENT_OUTPUT).
+ */
+static void
+begin_dynamic_rendering(struct vk_bundle *vk,
+                        VkCommandBuffer command_buffer,
+                        const struct render_gfx_target_resources *rtr,
+                        const VkClearColorValue *color)
+{
+	VkImageMemoryBarrier acquire_barrier = {
+	    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+	    .srcAccessMask = 0,
+	    .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT,
+	    .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+	    .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+	    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+	    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+	    .image = rtr->image,
+	    .subresourceRange =
+	        {
+	            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+	            .baseMipLevel = 0,
+	            .levelCount = 1,
+	            .baseArrayLayer = 0,
+	            .layerCount = 1,
+	        },
+	};
+	vk->vkCmdPipelineBarrier(                          //
+	    command_buffer,                                //
+	    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // srcStageMask
+	    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // dstStageMask
+	    0,                                             // dependencyFlags
+	    0, NULL,                                       // memory barriers
+	    0, NULL,                                       // buffer barriers
+	    1, &acquire_barrier);                          // image barriers
+
+	VkRenderingAttachmentInfo color_attachment = {
+	    .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+	    .imageView = rtr->view,
+	    .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+	    .loadOp = rtr->rgrp->load_op,
+	    .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+	    .clearValue = {.color = *color},
+	};
+
+	VkRenderingInfo rendering_info = {
+	    .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+	    .renderArea = rtr->render_area,
+	    .layerCount = 1,
+	    .viewMask = 0,
+	    .colorAttachmentCount = 1,
+	    .pColorAttachments = &color_attachment,
+	};
+
+	vk->vkCmdBeginRendering(command_buffer, &rendering_info);
+}
+
+/*!
+ * End a dynamic rendering instance and, since dynamic rendering has no automatic
+ * final layout transition, explicitly transition the target into its final
+ * layout to match the render-pass fallback's finalLayout. Callers that keep the
+ * image in COLOR_ATTACHMENT_OPTIMAL (scratch) do their own transition later.
+ */
+static void
+end_dynamic_rendering(struct vk_bundle *vk,
+                      VkCommandBuffer command_buffer,
+                      const struct render_gfx_target_resources *rtr)
+{
+	vk->vkCmdEndRendering(command_buffer);
+
+	VkImageLayout final_layout = rtr->rgrp->final_layout;
+	if (final_layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+		return;
+	}
+
+	VkImageMemoryBarrier final_barrier = {
+	    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+	    .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+	    .dstAccessMask = 0,
+	    .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+	    .newLayout = final_layout,
+	    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+	    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+	    .image = rtr->image,
+	    .subresourceRange =
+	        {
+	            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+	            .baseMipLevel = 0,
+	            .levelCount = 1,
+	            .baseArrayLayer = 0,
+	            .layerCount = 1,
+	        },
+	};
+	vk->vkCmdPipelineBarrier(                          //
+	    command_buffer,                                //
+	    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, // srcStageMask
+	    VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,          // dstStageMask
+	    0,                                             // dependencyFlags
+	    0, NULL,                                       // memory barriers
+	    0, NULL,                                       // buffer barriers
+	    1, &final_barrier);                            // image barriers
+}
+#endif // VK_KHR_dynamic_rendering
+
 static void
 begin_render_pass(struct vk_bundle *vk,
                   VkCommandBuffer command_buffer,
-                  VkRenderPass render_pass,
-                  VkFramebuffer framebuffer,
-                  const VkRect2D *render_area,
+                  const struct render_gfx_target_resources *rtr,
                   const VkClearColorValue *color)
 {
+#ifdef VK_KHR_dynamic_rendering
+	if (vk->features.dynamic_rendering) {
+		begin_dynamic_rendering(vk, command_buffer, rtr, color);
+		return;
+	}
+#endif
+
 	VkClearValue clear_color[1] = {{
 	    .color = *color,
 	}};
 
 	VkRenderPassBeginInfo render_pass_begin_info = {
 	    .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
-	    .renderPass = render_pass,
-	    .framebuffer = framebuffer,
-	    .renderArea = *render_area,
+	    .renderPass = rtr->rgrp->render_pass,
+	    .framebuffer = rtr->framebuffer,
+	    .renderArea = rtr->render_area,
 	    .clearValueCount = ARRAY_SIZE(clear_color),
 	    .pClearValues = clear_color,
 	};
 
 	vk->vkCmdBeginRenderPass(command_buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+}
+
+static void
+end_render_pass(struct vk_bundle *vk, VkCommandBuffer command_buffer, const struct render_gfx_target_resources *rtr)
+{
+#ifdef VK_KHR_dynamic_rendering
+	if (vk->features.dynamic_rendering) {
+		end_dynamic_rendering(vk, command_buffer, rtr);
+		return;
+	}
+#endif
+
+	vk->vkCmdEndRenderPass(command_buffer);
 }
 
 /// Update descriptor set for a layer to reference the parameter UBO and the source (layer) image.
@@ -336,6 +463,7 @@ dispatch_no_vbo(struct render_gfx *render, uint32_t vertex_count, VkPipeline pip
 XRT_CHECK_RESULT static VkResult
 create_layer_pipeline(struct vk_bundle *vk,
                       VkRenderPass render_pass,
+                      VkFormat color_format,
                       VkPipelineLayout pipeline_layout,
                       VkPipelineCache pipeline_cache,
                       VkBlendFactor src_blend_factor,
@@ -472,8 +600,23 @@ create_layer_pipeline(struct vk_bundle *vk,
 	 * Bringing it all together.
 	 */
 
+	// Dynamic rendering (render_pass is VK_NULL_HANDLE) needs the color
+	// attachment format(s) supplied to the pipeline directly.
+	const void *pipeline_pnext = NULL;
+#ifdef VK_KHR_dynamic_rendering
+	VkPipelineRenderingCreateInfo rendering_info = {
+	    .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+	    .colorAttachmentCount = 1,
+	    .pColorAttachmentFormats = &color_format,
+	};
+	if (vk->features.dynamic_rendering) {
+		pipeline_pnext = &rendering_info;
+	}
+#endif
+
 	const VkGraphicsPipelineCreateInfo pipeline_info = {
 	    .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+	    .pNext = pipeline_pnext,
 	    .stageCount = ARRAY_SIZE(shader_stages),
 	    .pStages = shader_stages,
 	    .pVertexInputState = &vertex_input_state,
@@ -520,6 +663,7 @@ struct mesh_params
 XRT_CHECK_RESULT static VkResult
 create_mesh_pipeline(struct vk_bundle *vk,
                      VkRenderPass render_pass,
+                     VkFormat color_format,
                      VkPipelineLayout pipeline_layout,
                      VkPipelineCache pipeline_cache,
                      uint32_t src_binding,
@@ -667,8 +811,23 @@ create_mesh_pipeline(struct vk_bundle *vk,
 	    },
 	};
 
+	// Dynamic rendering (render_pass is VK_NULL_HANDLE) needs the color
+	// attachment format(s) supplied to the pipeline directly.
+	const void *pipeline_pnext = NULL;
+#ifdef VK_KHR_dynamic_rendering
+	VkPipelineRenderingCreateInfo rendering_info = {
+	    .sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO,
+	    .colorAttachmentCount = 1,
+	    .pColorAttachmentFormats = &color_format,
+	};
+	if (vk->features.dynamic_rendering) {
+		pipeline_pnext = &rendering_info;
+	}
+#endif
+
 	VkGraphicsPipelineCreateInfo pipeline_info = {
 	    .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+	    .pNext = pipeline_pnext,
 	    .stageCount = ARRAY_SIZE(shader_stages),
 	    .pStages = shader_stages,
 	    .pVertexInputState = &vertex_input_state,
@@ -717,14 +876,19 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	struct vk_bundle *vk = r->vk;
 	VkResult ret;
 
-	ret = create_implicit_render_pass( //
-	    vk,                            //
-	    format,                        // target_format
-	    load_op,                       //
-	    final_layout,                  //
-	    &rgrp->render_pass);           // out_render_pass
-	VK_CHK_WITH_RET(ret, "create_implicit_render_pass", false);
-	VK_NAME_RENDER_PASS(vk, rgrp->render_pass, "render_gfx_render_pass render pass");
+	// Dynamic rendering does not use a VkRenderPass object; the pipelines and
+	// the target attachment carry the format instead.
+	rgrp->render_pass = VK_NULL_HANDLE;
+	if (!vk->features.dynamic_rendering) {
+		ret = create_implicit_render_pass( //
+		    vk,                            //
+		    format,                        // target_format
+		    load_op,                       //
+		    final_layout,                  //
+		    &rgrp->render_pass);           // out_render_pass
+		VK_CHK_WITH_RET(ret, "create_implicit_render_pass", false);
+		VK_NAME_RENDER_PASS(vk, rgrp->render_pass, "render_gfx_render_pass render pass");
+	}
 
 	struct mesh_params simple_params = {
 	    .do_timewarp = false,
@@ -733,6 +897,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	ret = create_mesh_pipeline(    //
 	    vk,                        //
 	    rgrp->render_pass,         //
+	    format,                    //
 	    r->mesh.pipeline_layout,   //
 	    r->pipeline_cache,         //
 	    r->mesh.src_binding,       //
@@ -752,6 +917,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	ret = create_mesh_pipeline(         //
 	    vk,                             //
 	    rgrp->render_pass,              //
+	    format,                         //
 	    r->mesh.pipeline_layout,        //
 	    r->pipeline_cache,              //
 	    r->mesh.src_binding,            //
@@ -771,6 +937,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	ret = create_layer_pipeline(                    //
 	    vk,                                         //
 	    rgrp->render_pass,                          //
+	    format,                                     //
 	    r->gfx.layer.shared.pipeline_layout,        //
 	    r->pipeline_cache,                          //
 	    blend_factor_premultiplied_alpha,           // src_blend_factor
@@ -784,6 +951,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	ret = create_layer_pipeline(                      //
 	    vk,                                           //
 	    rgrp->render_pass,                            //
+	    format,                                       //
 	    r->gfx.layer.shared.pipeline_layout,          //
 	    r->pipeline_cache,                            //
 	    blend_factor_unpremultiplied_alpha,           // src_blend_factor
@@ -798,6 +966,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	ret = create_layer_pipeline(                     //
 	    vk,                                          //
 	    rgrp->render_pass,                           //
+	    format,                                      //
 	    r->gfx.layer.shared.pipeline_layout,         //
 	    r->pipeline_cache,                           //
 	    blend_factor_premultiplied_alpha,            // src_blend_factor
@@ -811,6 +980,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	ret = create_layer_pipeline(                       //
 	    vk,                                            //
 	    rgrp->render_pass,                             //
+	    format,                                        //
 	    r->gfx.layer.shared.pipeline_layout,           //
 	    r->pipeline_cache,                             //
 	    blend_factor_unpremultiplied_alpha,            // src_blend_factor
@@ -825,6 +995,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	ret = create_layer_pipeline(                //
 	    vk,                                     //
 	    rgrp->render_pass,                      //
+	    format,                                 //
 	    r->gfx.layer.shared.pipeline_layout,    //
 	    r->pipeline_cache,                      //
 	    blend_factor_premultiplied_alpha,       // src_blend_factor
@@ -838,6 +1009,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	ret = create_layer_pipeline(                  //
 	    vk,                                       //
 	    rgrp->render_pass,                        //
+	    format,                                   //
 	    r->gfx.layer.shared.pipeline_layout,      //
 	    r->pipeline_cache,                        //
 	    blend_factor_unpremultiplied_alpha,       // src_blend_factor
@@ -852,6 +1024,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	ret = create_layer_pipeline(                //
 	    vk,                                     //
 	    rgrp->render_pass,                      //
+	    format,                                 //
 	    r->gfx.layer.shared.pipeline_layout,    //
 	    r->pipeline_cache,                      //
 	    blend_factor_premultiplied_alpha,       // src_blend_factor
@@ -864,6 +1037,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	ret = create_layer_pipeline(                  //
 	    vk,                                       //
 	    rgrp->render_pass,                        //
+	    format,                                   //
 	    r->gfx.layer.shared.pipeline_layout,      //
 	    r->pipeline_cache,                        //
 	    blend_factor_unpremultiplied_alpha,       // src_blend_factor
@@ -916,29 +1090,34 @@ bool
 render_gfx_target_resources_init(struct render_gfx_target_resources *rtr,
                                  struct render_resources *r,
                                  struct render_gfx_render_pass *rgrp,
+                                 VkImage target_image,
                                  VkImageView target,
                                  VkExtent2D extent)
 {
 	struct vk_bundle *vk = r->vk;
-	VkResult ret;
-	rtr->r = r;
-
-	ret = create_framebuffer( //
-	    vk,                   //
-	    target,               // image_view
-	    rgrp->render_pass,    //
-	    extent.width,         //
-	    extent.height,        //
-	    &rtr->framebuffer);   // out_external_framebuffer
-	VK_CHK_WITH_RET(ret, "create_framebuffer", false);
-	VK_NAME_FRAMEBUFFER(vk, rtr->framebuffer, "render_gfx_target_resources framebuffer");
 
 	// Set fields.
+	rtr->r = r;
 	rtr->rgrp = rgrp;
+	rtr->image = target_image;
+	rtr->view = target;
 	rtr->render_area = (VkRect2D){
 	    .offset = {0, 0},
 	    .extent = extent,
 	};
+
+	// Dynamic rendering renders straight into the image view; no framebuffer.
+	if (!vk->features.dynamic_rendering) {
+		VkResult ret = create_framebuffer( //
+		    vk,                            //
+		    target,                        // image_view
+		    rgrp->render_pass,             //
+		    extent.width,                  //
+		    extent.height,                 //
+		    &rtr->framebuffer);            // out_external_framebuffer
+		VK_CHK_WITH_RET(ret, "create_framebuffer", false);
+		VK_NAME_FRAMEBUFFER(vk, rtr->framebuffer, "render_gfx_target_resources framebuffer");
+	}
 
 	return true;
 }
@@ -1058,16 +1237,10 @@ render_gfx_begin_target(struct render_gfx *render,
 	assert(render->rtr == NULL);
 	render->rtr = rtr;
 
-	VkRenderPass render_pass = rtr->rgrp->render_pass;
-	VkFramebuffer framebuffer = rtr->framebuffer;
-	const VkRect2D *render_area = &rtr->render_area;
-
 	begin_render_pass(  //
 	    vk,             //
 	    render->r->cmd, //
-	    render_pass,    //
-	    framebuffer,    //
-	    render_area,    //
+	    rtr,            //
 	    color);         //
 
 	return true;
@@ -1078,11 +1251,12 @@ render_gfx_end_target(struct render_gfx *render)
 {
 	struct vk_bundle *vk = vk_from_render(render);
 
-	assert(render->rtr != NULL);
+	struct render_gfx_target_resources *rtr = render->rtr;
+	assert(rtr != NULL);
 	render->rtr = NULL;
 
 	// Stop the [shared] render pass.
-	vk->vkCmdEndRenderPass(render->r->cmd);
+	end_render_pass(vk, render->r->cmd, rtr);
 }
 
 void

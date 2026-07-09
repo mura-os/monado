@@ -89,6 +89,17 @@ def get_device_cmds():
         Cmd("vkCreateRenderPass"),
         Cmd("vkDestroyRenderPass"),
         None,
+        Cmd(
+            "vkCmdBeginRenderingKHR",
+            member_name="vkCmdBeginRendering",
+            requires=("VK_KHR_dynamic_rendering",),
+        ),
+        Cmd(
+            "vkCmdEndRenderingKHR",
+            member_name="vkCmdEndRendering",
+            requires=("VK_KHR_dynamic_rendering",),
+        ),
+        None,
         Cmd("vkCreateFramebuffer"),
         Cmd("vkDestroyFramebuffer"),
         None,
@@ -314,6 +325,7 @@ INSTANCE_EXTENSIONS_TO_CHECK = [
 DEVICE_EXTENSIONS_TO_CHECK = [
     "VK_KHR_8bit_storage",
     "VK_KHR_calibrated_timestamps",
+    "VK_KHR_dynamic_rendering",
     "VK_KHR_external_fence_fd",
     "VK_KHR_external_memory",
     "VK_KHR_external_semaphore_fd",

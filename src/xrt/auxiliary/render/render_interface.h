@@ -795,7 +795,13 @@ struct render_gfx_target_resources
 	//! The offset & extents of the framebuffer.
 	VkRect2D render_area;
 
-	//! Framebuffer for this target, depends on given VkImageView.
+	//! Target image, used for the dynamic rendering layout barriers.
+	VkImage image;
+
+	//! Target image view, rendered into directly with dynamic rendering.
+	VkImageView view;
+
+	//! Framebuffer for this target, only used on the render pass fallback path.
 	VkFramebuffer framebuffer;
 };
 
@@ -808,6 +814,7 @@ bool
 render_gfx_target_resources_init(struct render_gfx_target_resources *rtr,
                                  struct render_resources *r,
                                  struct render_gfx_render_pass *rgrp,
+                                 VkImage target_image,
                                  VkImageView target,
                                  VkExtent2D extent);
 

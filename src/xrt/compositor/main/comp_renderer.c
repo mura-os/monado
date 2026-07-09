@@ -442,6 +442,7 @@ renderer_build_rendering_target_resources(struct comp_renderer *r,
 
 	struct comp_compositor *c = r->c;
 
+	VkImage image = r->c->target->images[index].handle;
 	VkImageView image_view = r->c->target->images[index].view;
 	VkExtent2D extent = {r->c->target->width, r->c->target->height};
 
@@ -449,6 +450,7 @@ renderer_build_rendering_target_resources(struct comp_renderer *r,
 	    rtr,                          //
 	    &c->nr,                       //
 	    &r->target_render_pass,       //
+	    image,                        //
 	    image_view,                   //
 	    extent);                      //
 }
