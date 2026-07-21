@@ -177,6 +177,30 @@ create_image(struct vk_bundle *vk, const struct xrt_swapchain_create_info *info,
 		add_format_non_dup(&flh, info->formats[i]);
 	}
 
+	/*
+	 * A mutable image without a format list makes conservative drivers
+	 * (freedreno: linear, no UBWC) pick a worst-case layout that a GL
+	 * client importing the exported memory cannot re-derive, as GL has no
+	 * way to express mutability. Constrain the views to the sRGB/UNORM
+	 * pair so the layout matches the importer's default again.
+	 */
+	if (has_mutable_usage && flh.format_count == 0) {
+		add_format_non_dup(&flh, image_format);
+		VkFormat sibling = VK_FORMAT_UNDEFINED;
+		switch (image_format) {
+		case VK_FORMAT_R8G8B8A8_SRGB: sibling = VK_FORMAT_R8G8B8A8_UNORM; break;
+		case VK_FORMAT_R8G8B8A8_UNORM: sibling = VK_FORMAT_R8G8B8A8_SRGB; break;
+		case VK_FORMAT_B8G8R8A8_SRGB: sibling = VK_FORMAT_B8G8R8A8_UNORM; break;
+		case VK_FORMAT_B8G8R8A8_UNORM: sibling = VK_FORMAT_B8G8R8A8_SRGB; break;
+		case VK_FORMAT_R8G8B8_SRGB: sibling = VK_FORMAT_R8G8B8_UNORM; break;
+		case VK_FORMAT_R8G8B8_UNORM: sibling = VK_FORMAT_R8G8B8_SRGB; break;
+		default: break;
+		}
+		if (sibling != VK_FORMAT_UNDEFINED) {
+			add_format_non_dup(&flh, sibling);
+		}
+	}
+
 
 #if defined(XRT_GRAPHICS_BUFFER_HANDLE_IS_AHARDWAREBUFFER)
 	VkExternalFormatANDROID format_android = {
