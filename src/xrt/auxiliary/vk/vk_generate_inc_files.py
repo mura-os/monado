@@ -181,6 +181,7 @@ def get_device_cmds():
         Cmd("vkGetSwapchainCounterEXT", requires=("VK_EXT_display_control",)),
         Cmd("vkRegisterDeviceEventEXT", requires=("VK_EXT_display_control",)),
         Cmd("vkRegisterDisplayEventEXT", requires=("VK_EXT_display_control",)),
+        Cmd("vkDisplayPowerControlEXT", requires=("VK_EXT_display_control",)),
         None,
         Cmd("vkGetImageDrmFormatModifierPropertiesEXT", requires=("VK_EXT_image_drm_format_modifier",)),
         None,

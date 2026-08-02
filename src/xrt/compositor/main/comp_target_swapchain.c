@@ -1317,6 +1317,41 @@ comp_target_swapchain_queue_supports_present(struct comp_target *ct,
 	return VK_SUCCESS;
 }
 
+/*
+ * Power the direct mode display down or up through the Vulkan WSI that owns
+ * it. The mode and framebuffer stay configured, so presents resume cleanly
+ * after powering back up. Does nothing on window targets (no display).
+ */
+static void
+comp_target_swapchain_set_output_enabled(struct comp_target *ct, bool enabled)
+{
+	struct comp_target_swapchain *cts = (struct comp_target_swapchain *)ct;
+
+#ifdef VK_EXT_display_control
+	struct vk_bundle *vk = get_vk(cts);
+
+	if (!vk->has_EXT_display_control || cts->display == VK_NULL_HANDLE) {
+		return;
+	}
+
+	VkDisplayPowerInfoEXT power_info = {
+	    .sType = VK_STRUCTURE_TYPE_DISPLAY_POWER_INFO_EXT,
+	    .powerState = enabled ? VK_DISPLAY_POWER_STATE_ON_EXT : VK_DISPLAY_POWER_STATE_OFF_EXT,
+	};
+
+	VkResult ret = vk->vkDisplayPowerControlEXT(vk->device, cts->display, &power_info);
+	if (ret != VK_SUCCESS) {
+		COMP_WARN(ct->c, "vkDisplayPowerControlEXT: %s", vk_result_string(ret));
+		return;
+	}
+
+	COMP_INFO(ct->c, "Display output %s.", enabled ? "enabled" : "disabled");
+#else
+	(void)cts;
+	(void)enabled;
+#endif
+}
+
 void
 comp_target_swapchain_init_and_set_fnptrs(struct comp_target_swapchain *cts,
                                           enum comp_target_display_timing_usage timing_usage)
@@ -1335,7 +1370,7 @@ comp_target_swapchain_init_and_set_fnptrs(struct comp_target_swapchain *cts,
 	cts->base.info_gpu = comp_target_swapchain_info_gpu;
 	cts->base.queue_supports_present = comp_target_swapchain_queue_supports_present;
 	cts->base.get_info = comp_target_get_info_default;
-	cts->base.set_output_enabled = comp_target_set_output_enabled_default;
+	cts->base.set_output_enabled = comp_target_swapchain_set_output_enabled;
 
 	os_thread_helper_init(&cts->vblank.event_thread);
 }
