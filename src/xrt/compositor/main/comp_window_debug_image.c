@@ -59,6 +59,13 @@ target_init_pre_vulkan(struct comp_target *ct)
 }
 
 static bool
+target_is_shared_presentable_image(struct comp_target *ct)
+{
+	(void)ct;
+	return false;
+}
+
+static bool
 target_init_post_vulkan(struct comp_target *ct, uint32_t preferred_width, uint32_t preferred_height)
 {
 	struct debug_image_target *dit = (struct debug_image_target *)ct;
@@ -367,6 +374,7 @@ target_create(struct comp_compositor *c)
 	dit->base.init_pre_vulkan = target_init_pre_vulkan;
 	dit->base.init_post_vulkan = target_init_post_vulkan;
 	dit->base.check_ready = target_check_ready;
+	dit->base.is_shared_presentable_image = target_is_shared_presentable_image;
 	dit->base.create_images = target_create_images;
 	dit->base.has_images = target_has_images;
 	dit->base.acquire = target_acquire;
