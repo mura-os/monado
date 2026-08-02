@@ -381,6 +381,7 @@ target_create(struct comp_compositor *c)
 	dit->base.queue_supports_present = target_queue_supports_present;
 	dit->base.is_shared_presentable_image = target_is_shared_presentable_image;
 	dit->base.get_info = comp_target_get_info_default;
+	dit->base.set_output_enabled = comp_target_set_output_enabled_default;
 	dit->base.destroy = target_destroy;
 	dit->base.c = c;
 

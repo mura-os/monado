@@ -93,6 +93,9 @@
 #define WINDOW_TITLE "Monado"
 
 DEBUG_GET_ONCE_BOOL_OPTION(disable_deferred, "XRT_COMPOSITOR_DISABLE_DEFERRED", false)
+// Keep rendering this long after the user takes the HMD off, so brief
+// proximity sensor blips while adjusting the fit don't cycle the panels.
+DEBUG_GET_ONCE_NUM_OPTION(presence_off_delay_ms, "XRT_COMPOSITOR_PRESENCE_OFF_DELAY_MS", 500)
 
 
 /*
@@ -166,6 +169,19 @@ compositor_end_session(struct xrt_compositor *xc)
 {
 	struct comp_compositor *c = comp_compositor(xc);
 	COMP_DEBUG(c, "END_SESSION");
+
+	/*
+	 * Nothing gets rendered between sessions and presence transitions are
+	 * only applied on the frame loop, so on power-managing devices leave
+	 * the panels powered down; the next session lights them again.
+	 */
+	if (c->presence.input != NULL && c->presence.displaying) {
+		c->presence.displaying = false;
+		if (c->presence.manage_display_power && c->target != NULL) {
+			COMP_INFO(c, "Session ended, turning display output off.");
+			comp_target_set_output_enabled(c->target, false);
+		}
+	}
 
 	compositor_session_cleanup(c);
 
@@ -1134,6 +1150,10 @@ comp_main_create_system_compositor(struct xrt_device *xdev,
 	// Do this as early as possible.
 	comp_base_init(&c->base);
 
+	c->presence.user_present = true;
+	c->presence.displaying = true;
+	c->presence.off_delay_ns = debug_get_num_option_presence_off_delay_ms() * (int64_t)U_TIME_1MS_IN_NS;
+
 	// Init the settings to default.
 	comp_settings_init(&c->settings, xdev);
 
@@ -1308,6 +1328,22 @@ comp_main_create_system_compositor(struct xrt_device *xdev,
 	// Needs to be delayed until after compositor's u_var has been setup.
 	if (!c->deferred_surface) {
 		comp_renderer_add_debug_vars(c->r);
+	}
+
+	if (xdev->supported.presence) {
+		for (size_t i = 0; i < xdev->input_count; i++) {
+			if (xdev->inputs[i].name == XRT_INPUT_GENERIC_HEAD_DETECT) {
+				c->presence.input = &xdev->inputs[i];
+				break;
+			}
+		}
+	}
+	if (c->presence.input != NULL) {
+		c->presence.manage_display_power = xdev->supported.presence_display_power;
+		COMP_INFO(c, "Watching user presence%s.",
+		          c->presence.manage_display_power ? " for display power" : "");
+		u_var_add_bool(c, &c->presence.user_present, "User present");
+		u_var_add_bool(c, &c->presence.displaying, "Displaying");
 	}
 
 	// Standard app pacer.

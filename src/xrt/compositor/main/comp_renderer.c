@@ -1117,6 +1117,48 @@ comp_renderer_draw(struct comp_renderer *r)
 
 	comp_target_update_timings(ct);
 
+	/*
+	 * While the user is not wearing the HMD rendering is skipped, and on
+	 * devices asking for display power management the target output is
+	 * also powered down; the timing below keeps running so app frame
+	 * loops don't notice.
+	 */
+	if (c->presence.input != NULL) {
+		xrt_device_update_inputs(c->xdev);
+		bool user_present = c->presence.input->value.boolean;
+
+		if (user_present != c->presence.user_present) {
+			c->presence.user_present = user_present;
+			if (!user_present) {
+				c->presence.absent_since_ns = os_monotonic_get_ns();
+			}
+		}
+
+		bool want = user_present;
+		if (!user_present && c->presence.displaying &&
+		    os_monotonic_get_ns() - c->presence.absent_since_ns < c->presence.off_delay_ns) {
+			// Still within the off delay, keep displaying.
+			want = true;
+		}
+
+		if (want != c->presence.displaying) {
+			COMP_INFO(c, "User is %s, %s rendering.", user_present ? "present" : "absent",
+			          want ? "resuming" : "pausing");
+			if (c->presence.manage_display_power) {
+				comp_target_set_output_enabled(ct, want);
+			}
+			c->presence.displaying = want;
+		}
+
+		if (!c->presence.displaying) {
+			comp_target_mark_submit_begin(ct, c->frame.rendering.id, os_monotonic_get_ns());
+			comp_target_mark_submit_end(ct, c->frame.rendering.id, os_monotonic_get_ns());
+
+			comp_frame_clear_locked(&c->frame.rendering);
+			return XRT_SUCCESS;
+		}
+	}
+
 	if (r->acquired_buffer < 0) {
 		// Ensures that renderings are created.
 		renderer_acquire_swapchain_image(r);

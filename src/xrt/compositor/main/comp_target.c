@@ -16,3 +16,10 @@ comp_target_get_info_default(struct comp_target *ct, struct comp_target_info *ou
 	(void)ct;
 	*out = COMP_TARGET_INFO_INIT;
 }
+
+void
+comp_target_set_output_enabled_default(struct comp_target *ct, bool enabled)
+{
+	(void)ct;
+	(void)enabled;
+}

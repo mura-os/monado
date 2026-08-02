@@ -160,6 +160,32 @@ struct comp_compositor
 		bool disable_fast_path;
 	} debug;
 
+	/*!
+	 * User presence (HMD wear) state, polled from the head device's
+	 * @ref XRT_INPUT_GENERIC_HEAD_DETECT input. Rendering is paused while
+	 * the user is away; the target output is additionally powered down
+	 * when enabled. The render thread polls and applies transitions in
+	 * @ref comp_renderer_draw, all fields are render thread only.
+	 */
+	struct
+	{
+		//! The head device's presence input, NULL disables the feature.
+		struct xrt_input *input;
+
+		//! Also power the display down/up on presence changes.
+		bool manage_display_power;
+
+		//! Is the user wearing the HMD right now.
+		bool user_present;
+		//! When the user went absent.
+		int64_t absent_since_ns;
+
+		//! Are frames being rendered and presented.
+		bool displaying;
+		//! Keep displaying this long after the user goes absent.
+		int64_t off_delay_ns;
+	} presence;
+
 	//! If true, part of the compositor startup will be delayed until a session is started
 	bool deferred_surface;
 };

@@ -1335,6 +1335,7 @@ comp_target_swapchain_init_and_set_fnptrs(struct comp_target_swapchain *cts,
 	cts->base.info_gpu = comp_target_swapchain_info_gpu;
 	cts->base.queue_supports_present = comp_target_swapchain_queue_supports_present;
 	cts->base.get_info = comp_target_get_info_default;
+	cts->base.set_output_enabled = comp_target_set_output_enabled_default;
 
 	os_thread_helper_init(&cts->vblank.event_thread);
 }

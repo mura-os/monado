@@ -373,6 +373,16 @@ struct comp_target
 	                                   VkBool32 *out_supported);
 
 	/*!
+	 * Power the physical display(s) down or back up without tearing down
+	 * the target, for example while the HMD is not being worn. While
+	 * disabled the caller stops calling present; a present after
+	 * re-enabling lights the display again. Must be called from the same
+	 * thread as acquire/present. Targets without display power control
+	 * use @ref comp_target_set_output_enabled_default.
+	 */
+	void (*set_output_enabled)(struct comp_target *ct, bool enabled);
+
+	/*!
 	 * Destroys this target.
 	 */
 	void (*destroy)(struct comp_target *ct);
@@ -416,6 +426,17 @@ comp_target_init_post_vulkan(struct comp_target *ct, uint32_t preferred_width, u
  */
 void
 comp_target_get_info_default(struct comp_target *ct, struct comp_target_info *out);
+
+/*!
+ * Default @ref comp_target::set_output_enabled: does nothing. Targets without
+ * display power control use this so the dispatch never has to null-check the
+ * function pointer.
+ *
+ * @public @memberof comp_target
+ * @ingroup comp_main
+ */
+void
+comp_target_set_output_enabled_default(struct comp_target *ct, bool enabled);
 
 /*!
  * Query a target's information into @p out.
@@ -738,6 +759,20 @@ comp_target_queue_supports_present(struct comp_target *ct, struct vk_bundle_queu
 {
 	COMP_TRACE_MARKER();
 	return ct->queue_supports_present(ct, queue, out_supported);
+}
+
+/*!
+ * @copydoc comp_target::set_output_enabled
+ *
+ * @public @memberof comp_target
+ * @ingroup comp_main
+ */
+static inline void
+comp_target_set_output_enabled(struct comp_target *ct, bool enabled)
+{
+	COMP_TRACE_MARKER();
+
+	ct->set_output_enabled(ct, enabled);
 }
 
 /*!
