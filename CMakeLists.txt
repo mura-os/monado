@@ -302,6 +302,7 @@ option_with_deps(XRT_FEATURE_DEBUG_GUI "Enable debug window to be used" DEPENDS 
 option(XRT_FEATURE_NO_COMPOSITOR_FOR_HEADLESS_SESSIONS "Does headless not create a compositor" OFF)
 option_with_deps(XRT_FEATURE_OPENVR "Build OpenVR runtime target" DEPENDS XRT_MODULE_OPENVR_STATE_TRACKER "XRT_MODULE_COMPOSITOR_MAIN OR XRT_MODULE_COMPOSITOR_NULL")
 option_with_deps(XRT_FEATURE_OPENXR "Build OpenXR runtime target" DEPENDS XRT_MODULE_OPENXR_STATE_TRACKER "XRT_MODULE_COMPOSITOR_MAIN OR XRT_MODULE_COMPOSITOR_NULL")
+option_with_deps(XRT_FEATURE_PASSTHROUGH_VIEW "Enable fused rendering of device camera passthrough" DEPENDS XRT_MODULE_COMPOSITOR_MAIN)
 set(XRT_FEATURE_OPENXR_DEBUG_UTILS OFF) # Has never been enabled
 option_with_deps(XRT_FEATURE_RENDERDOC "Enable RenderDoc API" DEPENDS "RT_LIBRARY OR WIN32 OR ANDROID")
 option_with_deps(XRT_FEATURE_RERUN "Enable integration of Rerun SDK" DEFAULT OFF DEPENDS rerun_sdk_FOUND)
@@ -668,6 +669,7 @@ message(STATUS "#    FEATURE_COLOR_LOG:                             ${XRT_FEATUR
 message(STATUS "#    FEATURE_DEBUG_GUI:                             ${XRT_FEATURE_DEBUG_GUI}")
 message(STATUS "#    FEATURE_OPENVR:                                ${XRT_FEATURE_OPENVR}")
 message(STATUS "#    FEATURE_OPENXR:                                ${XRT_FEATURE_OPENXR}")
+message(STATUS "#    FEATURE_PASSTHROUGH_VIEW:                      ${XRT_FEATURE_PASSTHROUGH_VIEW}")
 message(STATUS "#    FEATURE_RENDERDOC:                             ${XRT_FEATURE_RENDERDOC}")
 message(STATUS "#    FEATURE_RERUN:                                 ${XRT_FEATURE_RERUN}")
 message(STATUS "#    FEATURE_SERVICE:                               ${XRT_FEATURE_SERVICE}")

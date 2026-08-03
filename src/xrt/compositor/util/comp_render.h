@@ -192,6 +192,9 @@ struct comp_render_dispatch_data
 	//! False when chromatic aberration correction should be skipped.
 	bool do_cac;
 
+	//! Optional camera background for the gfx N-layer fast path.
+	struct render_gfx_passthrough_data passthrough;
+
 	/*!
 	 * Panel scanout direction. Mirrors @ref xrt_scanout_direction from the device's
 	 * @ref xrt_device_compositor_info. Today the timewarp shaders implement

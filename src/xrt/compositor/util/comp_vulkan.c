@@ -344,6 +344,7 @@ create_device(struct vk_bundle *vk, const struct comp_vulkan_arguments *vk_args)
 	    .timeline_semaphore = vk_args->timeline_semaphore,
 	    .synchronization_2 = true,
 	    .dynamic_rendering = true,
+	    .sampler_ycbcr_conversion = true,
 	    .present_id = true,
 	    .present_id2 = true,
 	    .present_wait = true,

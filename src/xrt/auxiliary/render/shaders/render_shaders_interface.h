@@ -40,6 +40,9 @@ struct render_shaders
 
 	VkShaderModule mesh_nlayer_vert;
 	VkShaderModule mesh_nlayer_frag;
+	VkShaderModule mesh_nlayer_passthrough_vert;
+	VkShaderModule mesh_nlayer_passthrough_frag;
+	VkShaderModule mesh_nlayer_passthrough_only_frag;
 
 
 	/*

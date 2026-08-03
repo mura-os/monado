@@ -22,6 +22,7 @@ extern "C" {
 #endif
 
 struct xrt_tracking;
+struct xrt_passthrough_stream;
 
 #define XRT_DEVICE_NAME_LEN 256
 
@@ -386,6 +387,9 @@ struct xrt_device
 
 	//! Always set, pointing to the tracking system for this device.
 	struct xrt_tracking_origin *tracking_origin;
+
+	//! Optional device-owned camera passthrough provider.
+	struct xrt_passthrough_stream *passthrough;
 
 	//! Number of bindings in xrt_device::binding_profiles
 	size_t binding_profile_count;

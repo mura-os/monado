@@ -44,6 +44,9 @@
 #include "mesh.vert.h"
 #include "mesh_nlayer.vert.h"
 #include "mesh_nlayer.frag.h"
+#include "mesh_nlayer_passthrough.vert.h"
+#include "mesh_nlayer_passthrough.frag.h"
+#include "mesh_nlayer_passthrough_only.frag.h"
 
 #if defined(__GNUC__)
 #pragma GCC diagnostic pop
@@ -122,6 +125,9 @@ render_shaders_load(struct render_shaders *s, struct vk_bundle *vk)
 
 	LOAD(mesh_nlayer_vert);
 	LOAD(mesh_nlayer_frag);
+	LOAD(mesh_nlayer_passthrough_vert);
+	LOAD(mesh_nlayer_passthrough_frag);
+	LOAD(mesh_nlayer_passthrough_only_frag);
 
 	LOAD(layer_cylinder_frag);
 	LOAD(layer_cylinder_vert);
@@ -151,6 +157,9 @@ render_shaders_fini(struct render_shaders *s, struct vk_bundle *vk)
 
 	D(ShaderModule, s->mesh_nlayer_vert);
 	D(ShaderModule, s->mesh_nlayer_frag);
+	D(ShaderModule, s->mesh_nlayer_passthrough_vert);
+	D(ShaderModule, s->mesh_nlayer_passthrough_frag);
+	D(ShaderModule, s->mesh_nlayer_passthrough_only_frag);
 
 	D(ShaderModule, s->layer_cylinder_frag);
 	D(ShaderModule, s->layer_cylinder_vert);

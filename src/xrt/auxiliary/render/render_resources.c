@@ -142,6 +142,7 @@ create_gfx_nlayer_descriptor_set_layout(struct vk_bundle *vk,
 XRT_CHECK_RESULT static VkResult
 create_gfx_nlayer_pipeline_layout(struct vk_bundle *vk,
                                   VkDescriptorSetLayout descriptor_set_layout,
+                                  VkDescriptorSetLayout passthrough_descriptor_set_layout,
                                   VkPipelineLayout *out_pipeline_layout)
 {
 	VkResult ret;
@@ -152,10 +153,14 @@ create_gfx_nlayer_pipeline_layout(struct vk_bundle *vk,
 	    .size = sizeof(uint32_t),
 	};
 
+	VkDescriptorSetLayout descriptor_set_layouts[2] = {
+	    descriptor_set_layout,
+	    passthrough_descriptor_set_layout,
+	};
 	VkPipelineLayoutCreateInfo pipeline_layout_info = {
 	    .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-	    .setLayoutCount = 1,
-	    .pSetLayouts = &descriptor_set_layout,
+	    .setLayoutCount = passthrough_descriptor_set_layout != VK_NULL_HANDLE ? 2 : 1,
+	    .pSetLayouts = descriptor_set_layouts,
 	    .pushConstantRangeCount = 1,
 	    .pPushConstantRanges = &push_constant_range,
 	};
@@ -647,7 +652,8 @@ bool
 render_resources_init(struct render_resources *r,
                       struct render_shaders *shaders,
                       struct vk_bundle *vk,
-                      struct xrt_device *xdev)
+                      struct xrt_device *xdev,
+                      VkDescriptorSetLayout passthrough_descriptor_set_layout)
 {
 	VkResult ret;
 	xrt_result_t xret;
@@ -672,6 +678,7 @@ render_resources_init(struct render_resources *r,
 	r->mesh.vertex_count = parts->distortion.mesh.vertex_count;
 	r->mesh.stride = parts->distortion.mesh.stride;
 	r->mesh.index_count_total = parts->distortion.mesh.index_count_total;
+	r->gfx.nlayer.passthrough_descriptor_set_layout = passthrough_descriptor_set_layout;
 	for (uint32_t i = 0; i < r->view_count; ++i) {
 		r->mesh.index_counts[i] = parts->distortion.mesh.index_counts[i];
 		r->mesh.index_offsets[i] = parts->distortion.mesh.index_offsets[i];
@@ -852,7 +859,8 @@ render_resources_init(struct render_resources *r,
 	if (r->gfx.nlayer.enabled) {
 		uint32_t per_stage_budget = MIN(vk->limits.max_per_stage_descriptor_samplers,
 		                                vk->limits.max_per_stage_descriptor_sampled_images);
-		uint32_t budget_n = per_stage_budget / r->view_count;
+		uint32_t reserved = passthrough_descriptor_set_layout != VK_NULL_HANDLE ? r->view_count : 0;
+		uint32_t budget_n = per_stage_budget > reserved ? (per_stage_budget - reserved) / r->view_count : 0;
 
 		r->gfx.nlayer.effective_nlayer_max = MIN((uint32_t)RENDER_NLAYER_MAX, budget_n);
 
@@ -1042,11 +1050,23 @@ render_resources_init(struct render_resources *r,
 			ret = create_gfx_nlayer_pipeline_layout(     //
 			    vk,                                      //
 			    r->gfx.nlayer.descriptor_set_layouts[i], //
+			    VK_NULL_HANDLE,                          //
 			    &r->gfx.nlayer.pipeline_layouts[i]);     //
 			VK_CHK_WITH_RET(ret, "create_gfx_nlayer_pipeline_layout", false);
 
 			VK_NAME_PIPELINE_LAYOUT(vk, r->gfx.nlayer.pipeline_layouts[i],
 			                        "render_resources gfx nlayer pipeline layout");
+
+			if (passthrough_descriptor_set_layout != VK_NULL_HANDLE) {
+				ret = create_gfx_nlayer_pipeline_layout(                //
+				    vk,                                                 //
+				    r->gfx.nlayer.descriptor_set_layouts[i],            //
+				    passthrough_descriptor_set_layout,                  //
+				    &r->gfx.nlayer.passthrough_pipeline_layouts[i]);    //
+				VK_CHK_WITH_RET(ret, "create_gfx_nlayer_pipeline_layout passthrough", false);
+				VK_NAME_PIPELINE_LAYOUT(vk, r->gfx.nlayer.passthrough_pipeline_layouts[i],
+				                        "render_resources gfx nlayer passthrough pipeline layout");
+			}
 		}
 
 		if (gfx_nlayer_max > 0) {
@@ -1494,6 +1514,7 @@ render_resources_fini(struct render_resources *r)
 	for (uint32_t i = 0; i < r->gfx.nlayer.effective_nlayer_max; ++i) {
 		D(DescriptorSetLayout, r->gfx.nlayer.descriptor_set_layouts[i]);
 		D(PipelineLayout, r->gfx.nlayer.pipeline_layouts[i]);
+		D(PipelineLayout, r->gfx.nlayer.passthrough_pipeline_layouts[i]);
 	}
 
 	D(DescriptorSetLayout, r->mesh.descriptor_set_layout);

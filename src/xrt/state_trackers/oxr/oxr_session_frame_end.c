@@ -1834,10 +1834,12 @@ oxr_session_frame_end(struct oxr_logger *log, struct oxr_session *sess, const Xr
 
 
 	/*
-	 * Early out for discarded frame if layer count is 0.
+	 * A zero-layer alpha-blend frame still exposes the environment and must
+	 * reach the compositor so device passthrough can be rendered by itself.
+	 * Other zero-layer frames retain the discard behaviour.
 	 */
 
-	if (frameEndInfo->layerCount == 0) {
+	if (frameEndInfo->layerCount == 0 && blend_mode != XRT_BLEND_MODE_ALPHA_BLEND) {
 
 		os_mutex_lock(&sess->active_wait_frames_lock);
 		sess->active_wait_frames--;
@@ -1858,7 +1860,7 @@ oxr_session_frame_end(struct oxr_logger *log, struct oxr_session *sess, const Xr
 	 * Layers.
 	 */
 
-	if (frameEndInfo->layers == NULL) {
+	if (frameEndInfo->layerCount > 0 && frameEndInfo->layers == NULL) {
 		return oxr_error(log, XR_ERROR_LAYER_INVALID, "(frameEndInfo->layers == NULL)");
 	}
 

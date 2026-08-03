@@ -12,6 +12,7 @@
  */
 
 #include "render/render_interface.h"
+#include "xrt/xrt_config_build.h"
 #include "xrt/xrt_defines.h"
 #include "xrt/xrt_frame.h"
 #include "xrt/xrt_compositor.h"
@@ -36,6 +37,9 @@
 
 #include "main/comp_frame.h"
 #include "main/comp_mirror_to_debug_gui.h"
+#ifdef XRT_FEATURE_PASSTHROUGH_VIEW
+#include "main/comp_passthrough.h"
+#endif
 
 #ifdef XRT_FEATURE_WINDOW_PEEK
 #include "main/comp_window_peek.h"
@@ -373,6 +377,8 @@ calc_pose_data(struct comp_renderer *r,
                struct xrt_pose out_world_scanout_begin[XRT_MAX_VIEWS],
                struct xrt_pose out_world_scanout_end[XRT_MAX_VIEWS],
                struct xrt_pose out_eye[XRT_MAX_VIEWS],
+               struct xrt_pose *out_head_scanout_begin,
+               struct xrt_pose *out_head_scanout_end,
                enum xrt_scanout_direction *out_scanout_direction,
                uint32_t view_count)
 {
@@ -485,6 +491,13 @@ calc_pose_data(struct comp_renderer *r,
 		// For remote rendering targets.
 		r->c->base.frame_params.fovs[i] = fov;
 		r->c->base.frame_params.poses[i] = result_scanout_start.pose;
+	}
+
+	if (out_head_scanout_begin != NULL) {
+		*out_head_scanout_begin = head_relation[0].pose;
+	}
+	if (out_head_scanout_end != NULL) {
+		*out_head_scanout_end = head_relation[1].pose;
 	}
 }
 
@@ -990,6 +1003,11 @@ renderer_fini(struct comp_renderer *r)
 {
 	struct vk_bundle *vk = &r->c->base.vk;
 
+	renderer_wait_for_last_fence(r);
+#ifdef XRT_FEATURE_PASSTHROUGH_VIEW
+	comp_passthrough_release_current(r->c->passthrough);
+#endif
+
 	// Command buffers
 	renderer_close_renderings_and_fences(r);
 
@@ -1038,17 +1056,30 @@ dispatch_graphics(struct comp_renderer *r,
 	struct xrt_pose world_poses_scanout_begin[XRT_MAX_VIEWS];
 	struct xrt_pose world_poses_scanout_end[XRT_MAX_VIEWS];
 	struct xrt_pose eye_poses[XRT_MAX_VIEWS];
+	struct xrt_pose head_pose_scanout_begin;
+	struct xrt_pose head_pose_scanout_end;
 	enum xrt_scanout_direction scanout_direction = XRT_SCANOUT_DIRECTION_TOP_TO_BOTTOM;
-	calc_pose_data(                //
-	    r,                         //
-	    fov_source,                //
-	    fovs,                      //
-	    world_poses_scanout_begin, //
-	    world_poses_scanout_end,   //
-	    eye_poses,                 //
-	    &scanout_direction,        //
-	    render->r->view_count);    //
+	calc_pose_data(                  //
+	    r,                           //
+	    fov_source,                  //
+	    fovs,                        //
+	    world_poses_scanout_begin,   //
+	    world_poses_scanout_end,     //
+	    eye_poses,                   //
+	    &head_pose_scanout_begin,    //
+	    &head_pose_scanout_end,      //
+	    &scanout_direction,          //
+	    render->r->view_count);      //
 	frame_state->data.scanout_direction = scanout_direction;
+
+#ifdef XRT_FEATURE_PASSTHROUGH_VIEW
+	bool passthrough_enabled = c->base.frame_params.passthrough_requested && frame_state->data.fast_path &&
+	                           c->nr.gfx.nlayer.enabled;
+	comp_passthrough_prepare(c->passthrough, passthrough_enabled, frame_state->data.do_timewarp, eye_poses,
+	                         &head_pose_scanout_begin, &head_pose_scanout_end, render->r->view_count,
+	                         &frame_state->data.passthrough);
+	frame_state->data.passthrough.do_camera_distortion = !c->debug.camera_distortion_off;
+#endif
 
 	// Does everything.
 	chl_frame_state_gfx_default_pipeline(      //
@@ -1111,6 +1142,8 @@ dispatch_compute(struct comp_renderer *r,
 	    world_poses_scanout_begin, //
 	    world_poses_scanout_end,   //
 	    eye_poses,                 //
+	    NULL,                      //
+	    NULL,                      //
 	    &scanout_direction,        //
 	    render->r->view_count);    //
 	frame_state->data.scanout_direction = scanout_direction;
@@ -1167,8 +1200,15 @@ comp_renderer_draw(struct comp_renderer *r)
 	// Tell the target we are starting to render, for frame timing.
 	comp_target_mark_begin(ct, c->frame.rendering.id, os_monotonic_get_ns());
 
+	// Descriptor sets and imported camera ring images may be reused below.
+	// Wait here, before command recording mutates them.
+	renderer_wait_for_last_fence(r);
+
 	// Are we ready to render? No - skip rendering.
 	if (!comp_target_check_ready(r->c->target)) {
+#ifdef XRT_FEATURE_PASSTHROUGH_VIEW
+		comp_passthrough_release_current(c->passthrough);
+#endif
 		// Need to emulate rendering for the timing.
 		//! @todo This should be discard.
 		comp_target_mark_submit_begin(ct, c->frame.rendering.id, os_monotonic_get_ns());
@@ -1205,11 +1245,14 @@ comp_renderer_draw(struct comp_renderer *r)
 	}
 
 	uint32_t active_layer_count = c->base.layer_accum.layer_count;
-	bool have_layers = active_layer_count > 0;
-	bool want_rendering = user_allows_rendering && have_layers;
+
+	// The alpha-blend fast path renders the camera without application layers.
+	bool have_content = active_layer_count > 0 || (c->base.frame_params.passthrough_requested &&
+	                                               c->base.frame_params.one_projection_layer_fast_path);
+	bool want_rendering = user_allows_rendering && have_content;
 
 	if (want_rendering && !c->display.rendering) {
-		COMP_INFO(c, "User is present and layers are available, resuming rendering.");
+		COMP_INFO(c, "User is present and content is available, resuming rendering.");
 		comp_compositor_set_rendering(c, true);
 	}
 
@@ -1218,6 +1261,9 @@ comp_renderer_draw(struct comp_renderer *r)
 	 * present. A client can therefore resume its frame loop normally.
 	 */
 	if (!c->display.rendering) {
+#ifdef XRT_FEATURE_PASSTHROUGH_VIEW
+		comp_passthrough_set_enabled(c->passthrough, false);
+#endif
 		comp_target_mark_submit_begin(ct, c->frame.rendering.id, os_monotonic_get_ns());
 		comp_target_mark_submit_end(ct, c->frame.rendering.id, os_monotonic_get_ns());
 
@@ -1250,8 +1296,9 @@ comp_renderer_draw(struct comp_renderer *r)
 	bool do_cac;
 	comp_compositor_get_dispatch_flags(c, &do_timewarp, &do_distortion, &do_cac);
 
-	// Consistency check.
-	assert(!fast_path || c->base.layer_accum.layer_count >= 1);
+	// The alpha-blend passthrough-only fast path intentionally has no app layers.
+	assert(!fast_path || c->base.layer_accum.layer_count >= 1 ||
+	       c->base.frame_params.passthrough_requested);
 
 	// For scratch image debugging.
 	struct chl_frame_state frame_state;
@@ -1271,6 +1318,10 @@ comp_renderer_draw(struct comp_renderer *r)
 
 	VkResult res = VK_SUCCESS;
 	if (use_compute) {
+#ifdef XRT_FEATURE_PASSTHROUGH_VIEW
+		// Compute has no fused camera path, so the stream is never needed.
+		comp_passthrough_set_enabled(c->passthrough, false);
+#endif
 		render_compute_init(&render_c, &c->nr);
 		res = dispatch_compute(r, &render_c, &frame_state, fov_source, render_layer_count);
 	} else {
@@ -1395,7 +1446,7 @@ comp_renderer_draw(struct comp_renderer *r)
 	}
 
 	if (xret == XRT_SUCCESS && present_success && clear_and_pause) {
-		const char *reason = user_allows_rendering ? "No layers are available" : "User is absent";
+		const char *reason = user_allows_rendering ? "No content is available" : "User is absent";
 		COMP_INFO(c, "%s, pausing rendering after clearing the display.", reason);
 		comp_compositor_set_rendering(c, false);
 	}

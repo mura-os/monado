@@ -672,6 +672,13 @@ filter_device_features(struct vk_bundle *vk,
 	};
 #endif
 
+#ifdef VK_KHR_sampler_ycbcr_conversion
+	VkPhysicalDeviceSamplerYcbcrConversionFeaturesKHR sampler_ycbcr_info = {
+	    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES_KHR,
+	    .pNext = NULL,
+	};
+#endif
+
 #if defined(VK_KHR_present_id) && defined(VK_KHR_present_wait)
 	VkPhysicalDevicePresentIdFeaturesKHR present_id_info = {
 	    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR,
@@ -747,6 +754,13 @@ filter_device_features(struct vk_bundle *vk,
 	if (vk->has_KHR_timeline_semaphore) {
 		vk_append_to_pnext_chain((VkBaseInStructure *)&physical_device_features,
 		                         (VkBaseInStructure *)&timeline_semaphore_info);
+	}
+#endif
+
+#ifdef VK_KHR_sampler_ycbcr_conversion
+	if (vk->has_KHR_sampler_ycbcr_conversion) {
+		vk_append_to_pnext_chain((VkBaseInStructure *)&physical_device_features,
+		                         (VkBaseInStructure *)&sampler_ycbcr_info);
 	}
 #endif
 
@@ -827,6 +841,10 @@ filter_device_features(struct vk_bundle *vk,
 
 #ifdef VK_KHR_present_id2
 	CHECK(present_id2, present_id2_info.presentId2);
+#endif
+
+#ifdef VK_KHR_sampler_ycbcr_conversion
+	CHECK(sampler_ycbcr_conversion, sampler_ycbcr_info.samplerYcbcrConversion);
 #endif
 
 #if defined(VK_KHR_present_id) && defined(VK_KHR_present_wait)
@@ -993,6 +1011,7 @@ vk_create_device(struct vk_bundle *vk,
 	vk->features.timeline_semaphore = device_features.timeline_semaphore;
 	vk->features.synchronization_2 = device_features.synchronization_2;
 	vk->features.dynamic_rendering = device_features.dynamic_rendering;
+	vk->features.sampler_ycbcr_conversion = device_features.sampler_ycbcr_conversion;
 	vk->features.present_id = device_features.present_id;
 	vk->features.present_id2 = device_features.present_id2;
 	vk->features.present_wait = device_features.present_wait;
@@ -1141,6 +1160,14 @@ vk_create_device(struct vk_bundle *vk,
 	};
 #endif
 
+#ifdef VK_KHR_sampler_ycbcr_conversion
+	VkPhysicalDeviceSamplerYcbcrConversionFeaturesKHR sampler_ycbcr_info = {
+	    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SAMPLER_YCBCR_CONVERSION_FEATURES_KHR,
+	    .pNext = NULL,
+	    .samplerYcbcrConversion = device_features.sampler_ycbcr_conversion,
+	};
+#endif
+
 #ifdef VK_KHR_synchronization2
 	VkPhysicalDeviceSynchronization2FeaturesKHR synchronization_2_info = {
 	    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES_KHR,
@@ -1227,6 +1254,13 @@ vk_create_device(struct vk_bundle *vk,
 	if (vk->has_KHR_timeline_semaphore) {
 		vk_append_to_pnext_chain((VkBaseInStructure *)&device_create_info,
 		                         (VkBaseInStructure *)&timeline_semaphore_info);
+	}
+#endif
+
+#ifdef VK_KHR_sampler_ycbcr_conversion
+	if (vk->has_KHR_sampler_ycbcr_conversion && device_features.sampler_ycbcr_conversion) {
+		vk_append_to_pnext_chain((VkBaseInStructure *)&device_create_info,
+		                         (VkBaseInStructure *)&sampler_ycbcr_info);
 	}
 #endif
 

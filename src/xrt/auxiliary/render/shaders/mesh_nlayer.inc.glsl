@@ -47,6 +47,24 @@ struct WrapData
 	vec4 params;
 };
 
+#if XRT_MESH_NLAYER_PASSTHROUGH
+// EFS curved-window + KB4 camera model, filled per view by comp_passthrough.
+struct PassthroughData
+{
+	vec4 r0;
+	vec4 r1;
+	vec4 r2;
+	vec4 intr;
+	vec4 dist;
+	vec4 misc;
+	vec4 camera_position;
+	mat4 transform_capture_begin_scanout_begin;
+	mat4 transform_capture_begin_scanout_end;
+	mat4 transform_capture_end_scanout_begin;
+	mat4 transform_capture_end_scanout_end;
+};
+#endif
+
 // Must match struct render_gfx_mesh_nlayer_ubo_data on the C side. Compared
 // to distortion_nlayer.comp's Config: views[] (target offsets/extents) is
 // dropped — the viewport does that — and vertex_rot[] is added for the vertex
@@ -66,6 +84,9 @@ layout (binding = 1, std140) uniform restrict Config
 	mat4 transform_timewarp_scanout_end[MAX_NLAYER * VIEWS];
 	QuadData quads[MAX_NLAYER * VIEWS];
 	WrapData wraps[MAX_NLAYER * VIEWS];
+#if XRT_MESH_NLAYER_PASSTHROUGH
+	PassthroughData passthrough[VIEWS];
+#endif
 } ubo;
 
 // View index of the current draw, dynamically uniform.

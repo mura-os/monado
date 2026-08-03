@@ -8,6 +8,8 @@
  * @ingroup aux_distortion
  */
 
+#include "xrt/xrt_config_build.h"
+
 #include "util/u_misc.h"
 #include "util/u_frame.h"
 #include "util/u_debug.h"
@@ -561,8 +563,17 @@ u_distortion_mesh_fill_in_none(struct xrt_device *xdev)
 {
 	struct xrt_hmd_parts *target = xdev->hmd;
 
+	// A single cell suffices for the affine identity mapping, but the gfx
+	// passthrough path projects the camera per mesh vertex and needs real
+	// tessellation density.
+#ifdef XRT_FEATURE_PASSTHROUGH_VIEW
+	uint32_t num = (uint32_t)debug_get_num_option_mesh_size();
+#else
+	uint32_t num = 1;
+#endif
+
 	// Do the generation.
-	run_func(xdev, u_distortion_mesh_none, target, 1);
+	run_func(xdev, u_distortion_mesh_none, target, num);
 
 	// Make the target mostly usable.
 	target->distortion.models |= XRT_DISTORTION_MODEL_NONE;

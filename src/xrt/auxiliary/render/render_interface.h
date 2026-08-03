@@ -200,6 +200,42 @@ struct render_compute_nlayer_wrap_data
 	float params[4];
 };
 
+/*!
+ * One view's fused passthrough camera parameters. Layout matches
+ * PassthroughData in mesh_nlayer.inc.glsl under std140.
+ */
+struct render_gfx_passthrough_ubo_data
+{
+	float r0[4];
+	float r1[4];
+	float r2[4];
+	float intr[4];
+	float dist[4];
+	float misc[4];
+	float camera_position[4];
+	/*!
+	 * Eye-local display points to capture-time device coordinates. The
+	 * four corners cover camera rolling readout and display scanout.
+	 */
+	struct xrt_matrix_4x4 transform_capture_begin_scanout_begin;
+	struct xrt_matrix_4x4 transform_capture_begin_scanout_end;
+	struct xrt_matrix_4x4 transform_capture_end_scanout_begin;
+	struct xrt_matrix_4x4 transform_capture_end_scanout_end;
+};
+
+/*!
+ * Per-frame resources supplied by the generic compositor passthrough bridge.
+ */
+struct render_gfx_passthrough_data
+{
+	bool active;
+	//! Apply the camera model when sampling; false shows the raw frame.
+	bool do_camera_distortion;
+	VkDescriptorSet descriptor_set;
+	VkImage images[XRT_MAX_VIEWS];
+	struct render_gfx_passthrough_ubo_data views[XRT_MAX_VIEWS];
+};
+
 
 /*
  *
@@ -252,6 +288,17 @@ render_time_warp_matrix_fold_remap_and_rect(struct xrt_matrix_4x4 *matrix, const
  */
 void
 render_calc_proj_bounds_transform(const struct xrt_normalized_rect *rect, struct xrt_normalized_rect *out_transform);
+
+/*!
+ * Calculates the rotational part of the projection-layer timewarp matrix.
+ *
+ * The result maps a direction in @p new_pose coordinates into @p src_pose
+ * coordinates: R_src^-1 * R_new.
+ */
+void
+render_calc_time_warp_rotation(const struct xrt_pose *src_pose,
+                               const struct xrt_pose *new_pose,
+                               struct xrt_matrix_4x4 *matrix);
 
 /*!
  * This function constructs a transformation in the form of a normalized rect
@@ -584,6 +631,9 @@ struct render_resources
 
 			VkDescriptorSetLayout descriptor_set_layouts[RENDER_NLAYER_MAX];
 			VkPipelineLayout pipeline_layouts[RENDER_NLAYER_MAX];
+			//! Optional set 1 and pipeline layouts for fused camera passthrough.
+			VkDescriptorSetLayout passthrough_descriptor_set_layout;
+			VkPipelineLayout passthrough_pipeline_layouts[RENDER_NLAYER_MAX];
 
 			//! Pool for the per-frame descriptor sets, reset each frame.
 			VkDescriptorPool descriptor_pool;
@@ -788,7 +838,8 @@ bool
 render_resources_init(struct render_resources *r,
                       struct render_shaders *shaders,
                       struct vk_bundle *vk,
-                      struct xrt_device *xdev);
+                      struct xrt_device *xdev,
+                      VkDescriptorSetLayout passthrough_descriptor_set_layout);
 
 /*!
  * Free all pools and static resources, does not free the struct itself.
@@ -1236,6 +1287,7 @@ struct render_gfx_mesh_nlayer_ubo_data
 	struct xrt_matrix_4x4 transform_timewarp_scanout_end[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
 	struct render_compute_nlayer_quad_data quads[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
 	struct render_compute_nlayer_wrap_data wraps[RENDER_NLAYER_MAX * XRT_MAX_VIEWS];
+	struct render_gfx_passthrough_ubo_data passthrough[XRT_MAX_VIEWS];
 };
 
 /*!
@@ -1329,8 +1381,9 @@ render_gfx_mesh_alloc_and_write(struct render_gfx *render,
  * Allocate and write the UBO and descriptor set for one N-layer composite,
  * serving all views: binding 0 gets @p layer_count * view_count
  * (sampler, image view) pairs flat-indexed as [layer * view_count + view],
- * binding 1 the UBO. See @ref render_gfx_mesh_alloc_and_write for lifetime
- * details; the descriptor set comes from the dedicated
+ * binding 1 the UBO. A zero @p layer_count is reserved for passthrough-only
+ * rendering and writes only the UBO. See @ref render_gfx_mesh_alloc_and_write
+ * for lifetime details; the descriptor set comes from the dedicated
  * @ref render_resources::gfx::nlayer pool, also reset each frame.
  *
  * @public @memberof render_gfx
@@ -1467,9 +1520,9 @@ render_gfx_mesh_draw(struct render_gfx *render, uint32_t mesh_index, VkDescripto
  * — the value of the warp_count spec constant (id 11). Must mirror the block
  * layout in mesh_nlayer_warp.inc.glsl: one element set per projection slot
  * (every projection carries its own source mapping, timewarped or static),
- * then one shared non-projection ray set per scanout class in use. Callers
- * route to another path when the result exceeds
- * @ref render_resources::gfx::nlayer::max_warp_count.
+ * one shared non-projection ray set per scanout class in use, then the
+ * passthrough camera element. Callers route to another path when the result
+ * exceeds @ref render_resources::gfx::nlayer::max_warp_count.
  *
  * @param do_chroma       Per-channel chromatic aberration sampling, i.e.
  *                        do_distortion && do_cac: 3 channels instead of 1.
@@ -1480,12 +1533,15 @@ render_gfx_mesh_draw(struct render_gfx *render, uint32_t mesh_index, VkDescripto
  *                        exist pass the upper bound
  *                        MIN(2, nonproj_slot_count); the exact count never
  *                        exceeds it, so a granted fast path always fits.
+ * @param do_passthrough  Fused camera background (adds the trailing camera
+ *                        UV + validity element).
  */
 static inline uint32_t
-render_gfx_nlayer_warp_count(bool do_chroma, uint32_t proj_slot_count, uint32_t ray_class_count)
+render_gfx_nlayer_warp_count(bool do_chroma, uint32_t proj_slot_count, uint32_t ray_class_count, bool do_passthrough)
 {
 	uint32_t channels = do_chroma ? 3 : 1;
-	return channels * (proj_slot_count + ray_class_count);
+	uint32_t pt_count = do_passthrough ? 1 : 0;
+	return channels * (proj_slot_count + ray_class_count) + pt_count;
 }
 
 /*!
@@ -1495,7 +1551,14 @@ render_gfx_nlayer_warp_count(bool do_chroma, uint32_t proj_slot_count, uint32_t 
  * @ref render_resources_get_or_create_nlayer_pipeline. Requires
  * @ref render_gfx_render_pass::nlayer to be enabled (XRT_GFX_NLAYER) and the
  * variant's warp varyings to fit the device budget, see
- * @ref render_gfx_nlayer_warp_count.
+ * @ref render_gfx_nlayer_warp_count. A zero @p layer_count is valid only
+ * when @p do_passthrough is true.
+ *
+ * The passthrough takes no mask bit — it is world-locked by definition and
+ * reprojects whenever @p scanout_direction is not NONE. To that end an
+ * active passthrough blocks the fold of @p scanout_direction to NONE; with
+ * timewarp off the passthrough transforms all hold the same matrix, so the
+ * kept lerp degenerates correctly.
  *
  * A set bit in @p projection_bounds_test_mask makes that projection slot
  * bounds-test its source UVs (spec id 1). Only clear a bit when border
@@ -1517,6 +1580,8 @@ render_gfx_render_pass_get_or_create_nlayer_pipeline(struct render_gfx_render_pa
                                                      uint32_t projection_bounds_test_mask,
                                                      bool do_distortion,
                                                      bool do_cac,
+                                                     bool do_passthrough,
+                                                     bool do_camera_distortion,
                                                      enum xrt_scanout_direction scanout_direction,
                                                      VkPipeline *out_pipeline);
 
@@ -1528,7 +1593,7 @@ render_gfx_render_pass_get_or_create_nlayer_pipeline(struct render_gfx_render_pa
  * @p pipeline from
  * @ref render_gfx_render_pass_get_or_create_nlayer_pipeline and
  * @p descriptor_set from @ref render_gfx_mesh_nlayer_alloc_and_write, both
- * with the same @p layer_count.
+ * with the same @p layer_count. A zero @p layer_count draws passthrough only.
  *
  * @public @memberof render_gfx
  */
@@ -1537,7 +1602,9 @@ render_gfx_mesh_nlayer_draw(struct render_gfx *render,
                             uint32_t view_index,
                             uint32_t layer_count,
                             VkDescriptorSet descriptor_set,
-                            VkPipeline pipeline);
+                            VkDescriptorSet passthrough_descriptor_set,
+                            VkPipeline pipeline,
+                            bool do_passthrough);
 
 /*!
  * Dispatch a cylinder layer shader into the current target and view.

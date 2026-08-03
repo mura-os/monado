@@ -24,6 +24,8 @@
 #include "util/comp_render.h"
 #include "util/comp_render_helpers.h"
 
+#include <string.h>
+
 
 /*
  *
@@ -708,6 +710,46 @@ crg_distortion_fast_path(struct render_gfx *render,
  *
  */
 
+static void
+passthrough_image_barriers(struct render_gfx *render,
+                           const struct render_gfx_passthrough_data *passthrough,
+                           bool acquire)
+{
+	if (!passthrough->active) {
+		return;
+	}
+
+	struct vk_bundle *vk = render->r->vk;
+	bool foreign = vk->has_EXT_queue_family_foreign;
+	uint32_t our_family = vk->main_queue->family_index;
+	for (uint32_t view = 0; view < render->r->view_count; view++) {
+		VkImageMemoryBarrier barrier = {
+		    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+		    .srcAccessMask = acquire ? 0 : VK_ACCESS_SHADER_READ_BIT,
+		    .dstAccessMask = acquire ? VK_ACCESS_SHADER_READ_BIT : 0,
+		    .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
+		    .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+		    .srcQueueFamilyIndex =
+		        foreign ? (acquire ? VK_QUEUE_FAMILY_FOREIGN_EXT : our_family) : VK_QUEUE_FAMILY_IGNORED,
+		    .dstQueueFamilyIndex =
+		        foreign ? (acquire ? our_family : VK_QUEUE_FAMILY_FOREIGN_EXT) : VK_QUEUE_FAMILY_IGNORED,
+		    .image = passthrough->images[view],
+		    .subresourceRange =
+		        {
+		            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		            .levelCount = 1,
+		            .layerCount = 1,
+		        },
+		};
+		vk->vkCmdPipelineBarrier(render->r->cmd,
+		                         acquire ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+		                                 : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		                         acquire ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+		                                 : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+		                         0, 0, NULL, 0, NULL, 1, &barrier);
+	}
+}
+
 /// N-layer fast path: all layers composited by a single fragment shader
 /// (mesh_nlayer.frag), one draw per view, directly into the target — the gfx
 /// twin of the compute path's crc_nlayer_fast_path. No scratch image round
@@ -726,7 +768,8 @@ crg_nlayer_fast_path(struct render_gfx *render,
 	struct render_resources *r = render->r;
 	VkResult ret;
 
-	assert(layer_count >= 1 && layer_count <= r->gfx.nlayer.effective_nlayer_max);
+	assert(layer_count <= r->gfx.nlayer.effective_nlayer_max);
+	assert(layer_count > 0 || d->passthrough.active);
 
 	const uint32_t view_count = d->target.view_count;
 	VkSampler clamp_to_edge = r->samplers.clamp_to_edge;
@@ -785,6 +828,9 @@ crg_nlayer_fast_path(struct render_gfx *render,
 		} else {
 			math_matrix_4x4_identity(&data.scanout_view_rot_delta[v]);
 		}
+	}
+	if (d->passthrough.active) {
+		memcpy(data.passthrough, d->passthrough.views, sizeof(data.passthrough));
 	}
 
 	for (uint32_t l = 0; l < layer_count; l++) {
@@ -1002,14 +1048,17 @@ crg_nlayer_fast_path(struct render_gfx *render,
 	    projection_bounds_test_mask,                            //
 	    d->do_distortion,                                       //
 	    d->do_cac,                                              //
+	    d->passthrough.active,                                  //
+	    d->passthrough.do_camera_distortion,                    //
 	    d->scanout_direction,                                   //
 	    &pipeline);                                             //
 	if (ret != VK_SUCCESS) {
 		U_LOG_E("Failed to build gfx nlayer pipeline (N=%u, types=0x%x, unpre=0x%x, inv=0x%x, hidden=0x%x, "
-		        "sc_mask=0x%x, bt_mask=0x%x, d=%d, cac=%d, scanout=%d): %d",
+		        "sc_mask=0x%x, bt_mask=0x%x, d=%d, cac=%d, pt=%d, cam=%d, scanout=%d): %d",
 		        layer_count, layer_types, unpremultiplied_mask, inverted_alpha_mask, eye_hidden_mask,
 		        scanout_compensate_layers_mask, projection_bounds_test_mask, (int)d->do_distortion,
-		        (int)d->do_cac, (int)d->scanout_direction, ret);
+		        (int)d->do_cac, (int)d->passthrough.active, (int)d->passthrough.do_camera_distortion,
+		        (int)d->scanout_direction, ret);
 		return false;
 	}
 
@@ -1031,6 +1080,8 @@ crg_nlayer_fast_path(struct render_gfx *render,
 	 * Command writing: one composite draw per view.
 	 */
 
+	passthrough_image_barriers(render, &d->passthrough, true);
+
 	begin_present_target(         //
 	    render,                   //
 	    d,                        //
@@ -1049,12 +1100,15 @@ crg_nlayer_fast_path(struct render_gfx *render,
 		    v,                       // view_index
 		    layer_count,             //
 		    descriptor_set,          //
-		    pipeline);               //
+		    d->passthrough.descriptor_set,
+		    pipeline,                //
+		    d->passthrough.active);  //
 
 		render_gfx_end_view(render);
 	}
 
 	render_gfx_end_target(render);
+	passthrough_image_barriers(render, &d->passthrough, false);
 
 	return true;
 }
@@ -1079,10 +1133,11 @@ crg_nlayer_varyings_fit(const struct render_resources *r,
 	}
 	uint32_t nonproj_slot_count = layer_count - proj_slot_count;
 
-	uint32_t warp_count = render_gfx_nlayer_warp_count(   //
-	    d->do_distortion && d->do_cac,                    //
-	    proj_slot_count,                                  //
-	    nonproj_slot_count > 2 ? 2 : nonproj_slot_count); //
+	uint32_t warp_count = render_gfx_nlayer_warp_count(  //
+	    d->do_distortion && d->do_cac,                   //
+	    proj_slot_count,                                 //
+	    nonproj_slot_count > 2 ? 2 : nonproj_slot_count, //
+	    d->passthrough.active);                          //
 
 	return warp_count <= r->gfx.nlayer.max_warp_count;
 }
@@ -1319,8 +1374,8 @@ comp_render_gfx_dispatch(struct render_gfx *render,
 	// Only used if fast_path is true.
 	const struct comp_layer *layer = &layers[0];
 
-	// Consistency check.
-	assert(!fast_path || layer_count >= 1);
+	// A zero-layer fast path is used only for fused camera passthrough.
+	assert(!fast_path || layer_count >= 1 || d->target.gfx.rtr->rgrp->nlayer.enabled);
 
 	// We want to read from the images afterwards.
 	VkImageLayout transition_to = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -1329,11 +1384,12 @@ comp_render_gfx_dispatch(struct render_gfx *render,
 	// composited by a single fragment shader, one draw per view, directly
 	// into the target. The compositor's fast_path eligibility already
 	// rejected features the shader can't represent.
+	bool passthrough_only = layer_count == 0 && d->passthrough.active;
+	bool app_layers_eligible = layer_count >= 1 && all_layers_are_nlayer_eligible(layers, layer_count);
 	bool use_nlayer = d->target.gfx.rtr->rgrp->nlayer.enabled &&                   //
 	                  fast_path &&                                                 //
-	                  layer_count >= 1 &&                                          //
 	                  layer_count <= render->r->gfx.nlayer.effective_nlayer_max && //
-	                  all_layers_are_nlayer_eligible(layers, layer_count) &&       //
+	                  (passthrough_only || app_layers_eligible) &&                 //
 	                  crg_nlayer_varyings_fit(render->r, d, layers, layer_count);  //
 
 	if (use_nlayer && crg_nlayer_fast_path(render, d, layers, layer_count)) {

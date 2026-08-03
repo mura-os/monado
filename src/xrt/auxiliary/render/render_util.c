@@ -136,35 +136,61 @@ render_max_layers_capable(const struct vk_bundle *vk, bool use_compute, uint32_t
 	return MAX(calculated_max_layers, 16);
 }
 
+static void
+calc_time_warp_rotation(const struct xrt_pose *src_pose,
+                        const struct xrt_pose *new_pose,
+                        struct xrt_matrix_4x4_f64 *result)
+{
+	// Source model rotation.
+	struct xrt_matrix_4x4_f64 src_rot;
+	struct xrt_quat src_q = src_pose->orientation;
+	m_mat4_f64_orientation(&src_q, &src_rot);
+
+	// New model rotation and view rotation.
+	struct xrt_matrix_4x4_f64 new_rot, new_rot_inv;
+	struct xrt_quat new_q = new_pose->orientation;
+	m_mat4_f64_orientation(&new_q, &new_rot);
+	m_mat4_f64_invert(&new_rot, &new_rot_inv);
+
+	/*
+	 * Keep the ordinary projection-layer timewarp calculation exactly:
+	 * invert(R_new^-1 * R_src) = R_src^-1 * R_new.
+	 */
+	struct xrt_matrix_4x4_f64 reverse_delta;
+	m_mat4_f64_multiply(&new_rot_inv, &src_rot, &reverse_delta);
+	m_mat4_f64_invert(&reverse_delta, result);
+}
+
+void
+render_calc_time_warp_rotation(const struct xrt_pose *src_pose,
+                               const struct xrt_pose *new_pose,
+                               struct xrt_matrix_4x4 *matrix)
+{
+	struct xrt_matrix_4x4_f64 result;
+	calc_time_warp_rotation(src_pose, new_pose, &result);
+
+	for (int i = 0; i < 16; i++) {
+		matrix->v[i] = (float)result.v[i];
+	}
+}
+
 void
 render_calc_time_warp_matrix(const struct xrt_pose *src_pose,
                              const struct xrt_fov *src_fov,
                              const struct xrt_pose *new_pose,
                              struct xrt_matrix_4x4 *matrix)
 {
-	// Src projection matrix.
+	// Source projection matrix.
 	struct xrt_matrix_4x4_f64 src_proj;
 	calc_projection(src_fov, &src_proj);
 
-	// Src rotation matrix.
-	struct xrt_matrix_4x4_f64 src_rot_inv;
-	struct xrt_quat src_q = src_pose->orientation;
-	m_mat4_f64_orientation(&src_q, &src_rot_inv); // This is a model matrix, a inverted view matrix.
+	// Reuse the same source-to-new rotation exposed to non-rectilinear paths.
+	struct xrt_matrix_4x4_f64 delta_rot;
+	calc_time_warp_rotation(src_pose, new_pose, &delta_rot);
 
-	// New rotation matrix.
-	struct xrt_matrix_4x4_f64 new_rot, new_rot_inv;
-	struct xrt_quat new_q = new_pose->orientation;
-	m_mat4_f64_orientation(&new_q, &new_rot_inv); // This is a model matrix, a inverted view matrix.
-	m_mat4_f64_invert(&new_rot_inv, &new_rot);    // Invert to make it a view matrix.
-
-	// Combine both rotation matrices to get difference.
-	struct xrt_matrix_4x4_f64 delta_rot, delta_rot_inv;
-	m_mat4_f64_multiply(&new_rot, &src_rot_inv, &delta_rot);
-	m_mat4_f64_invert(&delta_rot, &delta_rot_inv);
-
-	// Combine the source projection matrix and
+	// Combine the source projection matrix and rotation.
 	struct xrt_matrix_4x4_f64 result;
-	m_mat4_f64_multiply(&src_proj, &delta_rot_inv, &result);
+	m_mat4_f64_multiply(&src_proj, &delta_rot, &result);
 
 	// Convert from f64 to f32.
 	for (int i = 0; i < 16; i++) {

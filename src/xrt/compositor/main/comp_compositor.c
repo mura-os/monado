@@ -67,6 +67,9 @@
 #include "render/render_interface.h"
 #include "main/comp_compositor.h"
 #include "main/comp_frame.h"
+#ifdef XRT_FEATURE_PASSTHROUGH_VIEW
+#include "main/comp_passthrough.h"
+#endif
 
 #ifdef XRT_FEATURE_WINDOW_PEEK
 #include "main/comp_window_peek.h"
@@ -304,7 +307,8 @@ comp_compositor_get_dispatch_flags(struct comp_compositor *c,
  *
  * Gfx: exactly one projection layer is accepted, unless the experimental
  * N-layer fast path is enabled (XRT_GFX_NLAYER) which accepts the same layer
- * set as compute, bounded by the per-variant warp varying budget.
+ * set as compute, bounded by the per-variant warp varying budget. With alpha
+ * blending and fused passthrough, it also accepts zero application layers.
  *
  * In both cases layers using features the distortion shaders can't represent
  * (chroma key, color bias/scale) are rejected.
@@ -313,6 +317,19 @@ static bool
 can_do_projection_layer_fast_path(struct comp_compositor *c)
 {
 	uint32_t layer_count = c->base.layer_accum.layer_count;
+
+	/*
+	 * The gfx N-layer passthrough variant can render the camera without any
+	 * application layers. Compute has no equivalent fused camera path.
+	 */
+	if (layer_count == 0) {
+		bool have_passthrough = false;
+#ifdef XRT_FEATURE_PASSTHROUGH_VIEW
+		have_passthrough = c->passthrough != NULL;
+#endif
+		return have_passthrough && !c->settings.use_compute && c->nr.gfx.nlayer.enabled &&
+		       c->base.layer_accum.data.env_blend_mode == XRT_BLEND_MODE_ALPHA_BLEND;
+	}
 
 	if (c->settings.use_compute) {
 		if (layer_count < 1 || layer_count > c->nr.compute.distortion_nlayer.effective_nlayer_max) {
@@ -345,10 +362,21 @@ can_do_projection_layer_fast_path(struct comp_compositor *c)
 		// Two-ray-class upper bound; the exact per-slot masks are only
 		// derived at dispatch, and the exact count never exceeds this.
 		uint32_t nonproj_slot_count = layer_count - proj_slot_count;
+
+		// Passthrough is decided at render time (camera frame
+		// availability); count its element whenever it may go active
+		// so a granted fast path never outgrows the budget.
+		bool may_do_passthrough = false;
+#ifdef XRT_FEATURE_PASSTHROUGH_VIEW
+		may_do_passthrough = c->passthrough != NULL &&
+		                     c->base.layer_accum.data.env_blend_mode == XRT_BLEND_MODE_ALPHA_BLEND;
+#endif
+
 		uint32_t warp_count = render_gfx_nlayer_warp_count( //
 		    do_distortion && do_cac,                        //
 		    proj_slot_count,                                //
-		    MIN(2, nonproj_slot_count));                    //
+		    MIN(2, nonproj_slot_count),                     //
+		    may_do_passthrough);                            //
 		if (warp_count > c->nr.gfx.nlayer.max_warp_count) {
 			return false;
 		}
@@ -412,6 +440,8 @@ compositor_layer_commit(struct xrt_compositor *xc, xrt_graphics_sync_handle_t sy
 	    !c->debug.disable_fast_path &&        //
 	    can_do_projection_layer_fast_path(c); //
 	c->base.frame_params.one_projection_layer_fast_path = fast_path;
+	c->base.frame_params.passthrough_requested =
+	    c->base.layer_accum.data.env_blend_mode == XRT_BLEND_MODE_ALPHA_BLEND;
 
 
 	u_graphics_sync_unref(&sync_handle);
@@ -531,6 +561,10 @@ compositor_destroy(struct xrt_compositor *xc)
 
 	// Only depends on vk_bundle and shaders.
 	render_resources_fini(&c->nr);
+
+#ifdef XRT_FEATURE_PASSTHROUGH_VIEW
+	comp_passthrough_destroy(&c->passthrough);
+#endif
 
 	// As long as vk_bundle is valid it's safe to call this function.
 	render_shaders_fini(&c->shaders, vk);
@@ -729,6 +763,15 @@ static const char *optional_device_extensions[] = {
 #endif
 #ifdef VK_KHR_maintenance2
     VK_KHR_MAINTENANCE_2_EXTENSION_NAME,
+#endif
+#ifdef VK_KHR_bind_memory2
+    VK_KHR_BIND_MEMORY_2_EXTENSION_NAME,
+#endif
+#ifdef VK_KHR_sampler_ycbcr_conversion
+    VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME,
+#endif
+#ifdef VK_EXT_queue_family_foreign
+    VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
 #endif
 #ifdef VK_KHR_timeline_semaphore
     VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME,
@@ -1145,7 +1188,14 @@ compositor_init_render_resources(struct comp_compositor *c)
 		return false;
 	}
 
-	if (!render_resources_init(&c->nr, &c->shaders, get_vk(c), c->xdev)) {
+#ifdef XRT_FEATURE_PASSTHROUGH_VIEW
+	c->passthrough = comp_passthrough_create(c);
+#endif
+	VkDescriptorSetLayout passthrough_layout = VK_NULL_HANDLE;
+#ifdef XRT_FEATURE_PASSTHROUGH_VIEW
+	passthrough_layout = comp_passthrough_get_descriptor_set_layout(c->passthrough);
+#endif
+	if (!render_resources_init(&c->nr, &c->shaders, get_vk(c), c->xdev, passthrough_layout)) {
 		return false;
 	}
 
@@ -1375,6 +1425,9 @@ comp_main_create_system_compositor(struct xrt_device *xdev,
 	u_var_add_bool(c, &c->debug.atw_off, "Debug: ATW OFF");
 	u_var_add_bool(c, &c->debug.disable_fast_path, "Debug: Disable fast path");
 	u_var_add_bool(c, &c->debug.cac_off, "Debug: CAC OFF");
+#ifdef XRT_FEATURE_PASSTHROUGH_VIEW
+	u_var_add_bool(c, &c->debug.camera_distortion_off, "Debug: Camera distortion OFF");
+#endif
 	u_var_add_f32_timing(c, c->compositor_frame_times.debug_var, "Frame Times (Compositor)");
 
 	// Only add active views.

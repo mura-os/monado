@@ -8,8 +8,17 @@
 
 include(ShaderSpecialization)
 
-set(DEPENDS blit.inc.glsl hsv.inc.glsl layer_defines.inc.glsl mesh_nlayer.inc.glsl mesh_nlayer_warp.inc.glsl
-    srgb.inc.glsl)
+set(
+	DEPENDS
+	blit.inc.glsl
+	hsv.inc.glsl
+	layer_defines.inc.glsl
+	mesh_nlayer.inc.glsl
+	mesh_nlayer_warp.inc.glsl
+	mesh_nlayer_vert.inc.glsl
+	mesh_nlayer_frag.inc.glsl
+	srgb.inc.glsl
+	)
 
 set(SHADERS
     blit.comp
@@ -22,6 +31,9 @@ set(SHADERS
     mesh.vert
     mesh_nlayer.vert
     mesh_nlayer.frag
+    mesh_nlayer_passthrough.vert
+    mesh_nlayer_passthrough.frag
+    mesh_nlayer_passthrough_only.frag
     layer_cylinder.frag
     layer_cylinder.vert
     layer_equirect2.frag

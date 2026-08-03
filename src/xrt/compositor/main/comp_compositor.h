@@ -115,6 +115,9 @@ struct comp_compositor
 	//! Renderer helper.
 	struct comp_renderer *r;
 
+	//! Generic device camera passthrough bridge, NULL when unavailable.
+	struct comp_passthrough *passthrough;
+
 	//! Duration of a frame at current refresh rate.
 	int64_t frame_interval_ns;
 
@@ -161,6 +164,9 @@ struct comp_compositor
 
 		//! Temporarily disable chromatic aberration correction.
 		bool cac_off;
+
+		//! Temporarily disable the passthrough camera model (raw camera view).
+		bool camera_distortion_off;
 	} debug;
 
 	/*!

@@ -31,6 +31,9 @@ struct comp_frame_params
 	//! Special case one layer projection/projection-depth fast-path.
 	bool one_projection_layer_fast_path;
 
+	//! The submitted environment blend mode requests a camera background.
+	bool passthrough_requested;
+
 	//! fov as reported by device for the current submit.
 	struct xrt_fov fovs[XRT_MAX_VIEWS];
 	//! absolute pose as reported by device for the current submit.
