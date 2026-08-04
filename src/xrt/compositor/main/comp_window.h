@@ -14,6 +14,7 @@
 #include "main/comp_target_swapchain.h"
 #include "main/comp_compositor.h"
 
+#include "xrt/xrt_config_have.h"
 #include "xrt/xrt_config_os.h"
 
 #ifdef __cplusplus
@@ -73,6 +74,20 @@ comp_window_direct_wayland_create(struct comp_compositor *c);
 extern const struct comp_target_factory comp_target_factory_direct_wayland;
 
 #endif // VK_USE_PLATFORM_WAYLAND_KHR
+
+#ifdef XRT_HAVE_WAYLAND_DIRECT
+
+/*!
+ * Create a dual DRM lease direct mode target for the Samsung Galaxy XR.
+ *
+ * @ingroup comp_main
+ */
+struct comp_target *
+comp_window_galaxyxr_create(struct comp_compositor *c);
+
+extern const struct comp_target_factory comp_target_factory_galaxyxr;
+
+#endif // XRT_HAVE_WAYLAND_DIRECT
 
 #ifdef VK_USE_PLATFORM_XLIB_XRANDR_EXT
 /*!

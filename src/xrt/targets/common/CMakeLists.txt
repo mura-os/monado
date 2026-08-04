@@ -84,6 +84,11 @@ if(XRT_BUILD_DRIVER_XREAL_AIR)
 	target_link_libraries(target_lists PRIVATE drv_xreal_air)
 endif()
 
+if(XRT_BUILD_DRIVER_GALAXYXR)
+	target_sources(target_lists PRIVATE target_builder_galaxyxr.c)
+	target_link_libraries(target_lists PRIVATE drv_galaxyxr)
+endif()
+
 ###
 # Drivers
 #

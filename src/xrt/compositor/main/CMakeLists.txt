@@ -86,7 +86,10 @@ if(XRT_HAVE_WAYLAND)
 	if(XRT_HAVE_WAYLAND_DIRECT)
 		list(APPEND WL_PROTOS_XML ${WL_PROTOS_PKG_DIR}/staging/drm-lease/drm-lease-v1.xml)
 
-		target_sources(comp_main PRIVATE comp_window_direct_wayland.c)
+		target_sources(
+			comp_main PRIVATE comp_window_direct_wayland.c comp_window_galaxyxr.c
+					  comp_window_galaxyxr_pacing.c
+			)
 
 		target_link_libraries(comp_main PRIVATE PkgConfig::LIBDRM)
 	endif()

@@ -72,6 +72,33 @@ if(XRT_BUILD_DRIVER_DEPTHAI)
 	list(APPEND ENABLED_DRIVERS depthai)
 endif()
 
+if(XRT_BUILD_DRIVER_GALAXYXR)
+	add_library(
+		drv_galaxyxr STATIC
+		galaxyxr/galaxyxr_hmd.c
+		galaxyxr/galaxyxr_hmd_input.c
+		galaxyxr/galaxyxr_hmd_input.h
+		galaxyxr/galaxyxr_interface.h
+		galaxyxr/galaxyxr_profile.c
+		galaxyxr/galaxyxr_profile.h
+		galaxyxr/galaxyxr_ssc.c
+		galaxyxr/galaxyxr_ssc.h
+		)
+	target_link_libraries(drv_galaxyxr PRIVATE xrt-interfaces aux_util aux_os aux_math)
+	if(XRT_FEATURE_TITAN_PASSTHROUGH)
+		target_sources(
+			drv_galaxyxr
+			PRIVATE
+				galaxyxr/galaxyxr_passthrough.c
+				galaxyxr/galaxyxr_passthrough.h
+				galaxyxr/galaxyxr_passthrough_calibration.c
+				galaxyxr/galaxyxr_passthrough_calibration.h
+			)
+		target_link_libraries(drv_galaxyxr PRIVATE xrt-external-titan)
+	endif()
+	list(APPEND ENABLED_HEADSET_DRIVERS galaxyxr)
+endif()
+
 if(XRT_BUILD_DRIVER_SIMULATED)
 	add_library(
 		drv_simulated STATIC simulated/simulated_controller.c simulated/simulated_hmd.c

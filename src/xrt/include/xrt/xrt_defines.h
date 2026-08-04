@@ -1443,6 +1443,8 @@ enum xrt_input_name
 	XRT_INPUT_MAGNETRA2_GRIP_POSE                               = XRT_INPUT_NAME(0X150B, POSE),
 	XRT_INPUT_MAGNETRA2_AIM_POSE                                = XRT_INPUT_NAME(0X150C, POSE),
 
+	XRT_INPUT_GALAXYXR_POWER_CLICK                              = XRT_INPUT_NAME(0X1600, BOOLEAN),
+
 	// clang-format on
 };
 

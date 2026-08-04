@@ -311,6 +311,7 @@ option_with_deps(XRT_FEATURE_SERVICE_SYSTEMD "Enable systemd socket activation o
 option_with_deps(XRT_FEATURE_SLAM "Enable SLAM tracking support" DEPENDS XRT_HAVE_OPENCV XRT_HAVE_LINUX)
 option(XRT_FEATURE_SSE2 "Build using SSE2 instructions, if building for 32-bit x86" ON)
 option_with_deps(XRT_FEATURE_STEAMVR_PLUGIN "Build SteamVR plugin" DEPENDS "NOT ANDROID")
+option_with_deps(XRT_FEATURE_TITAN_PASSTHROUGH "Enable camera passthrough sourced from titan-server" DEPENDS XRT_HAVE_WAYLAND_DIRECT XRT_FEATURE_PASSTHROUGH_VIEW)
 option_with_deps(XRT_FEATURE_TRACING "Enable debug tracing on supported platforms" DEFAULT OFF DEPENDS "XRT_HAVE_PERCETTO OR XRT_HAVE_TRACY")
 option_with_deps(XRT_FEATURE_WINDOW_PEEK "Enable a window that displays the content of the HMD on screen" DEPENDS XRT_HAVE_SDL2)
 
@@ -378,6 +379,7 @@ option_with_deps(XRT_BUILD_DRIVER_RIFT "Enable Oculus Rift (DK2/CV1) device driv
 option_with_deps(XRT_BUILD_DRIVER_RIFT_SENSOR "Enable Oculus Rift Sensor (DK2/CV1) device driver" DEPENDS XRT_BUILD_DRIVER_RIFT XRT_BUILD_DRIVER_UVC XRT_HAVE_LIBUSB)
 option_with_deps(XRT_BUILD_DRIVER_RIFT_S "Enable Oculus Rift S device driver" DEPENDS XRT_HAVE_V4L2)
 option_with_deps(XRT_BUILD_DRIVER_ROKID "Enable Rokid driver" DEPENDS "XRT_HAVE_LIBUSB")
+option_with_deps(XRT_BUILD_DRIVER_GALAXYXR "Enable Samsung Galaxy XR driver" DEPENDS XRT_HAVE_LINUX)
 option_with_deps(XRT_BUILD_DRIVER_STEAMVR_LIGHTHOUSE "Enable SteamVR Lighthouse driver" DEPENDS XRT_HAVE_LINUX XRT_MODULE_AUX_VIVE XRT_MODULE_AUX_HTC)
 option_with_deps(XRT_BUILD_DRIVER_SURVIVE "Enable libsurvive driver" DEPENDS SURVIVE_FOUND XRT_MODULE_AUX_VIVE XRT_MODULE_AUX_HTC)
 option_with_deps(XRT_BUILD_DRIVER_ULV2 "Enable Ultraleap v2 driver" DEPENDS LeapV2_FOUND)
@@ -479,6 +481,7 @@ list(
 	"BLUBUR_S1"
 	"CONTACTGLOVE"
 	"DAYDREAM"
+	"GALAXYXR"
 	"SIMULATED"
 	"HANDTRACKING"
 	"HDK"
@@ -677,6 +680,7 @@ message(STATUS "#    FEATURE_SERVICE_SYSTEMD:                       ${XRT_FEATUR
 message(STATUS "#    FEATURE_SLAM:                                  ${XRT_FEATURE_SLAM}")
 message(STATUS "#    FEATURE_SSE2:                                  ${XRT_FEATURE_SSE2}")
 message(STATUS "#    FEATURE_STEAMVR_PLUGIN:                        ${XRT_FEATURE_STEAMVR_PLUGIN}")
+message(STATUS "#    FEATURE_TITAN_PASSTHROUGH:                     ${XRT_FEATURE_TITAN_PASSTHROUGH}")
 message(STATUS "#    FEATURE_TRACING:                               ${XRT_FEATURE_TRACING}")
 message(STATUS "#    FEATURE_WINDOW_PEEK:                           ${XRT_FEATURE_WINDOW_PEEK}")
 message(STATUS "#")
@@ -741,6 +745,7 @@ message(STATUS "#    DRIVER_DEPTHAI:              ${XRT_BUILD_DRIVER_DEPTHAI}")
 message(STATUS "#    DRIVER_EUROC:                ${XRT_BUILD_DRIVER_EUROC}")
 message(STATUS "#    DRIVER_HANDTRACKING:         ${XRT_BUILD_DRIVER_HANDTRACKING}")
 message(STATUS "#    DRIVER_HDK:                  ${XRT_BUILD_DRIVER_HDK}")
+message(STATUS "#    DRIVER_GALAXYXR:             ${XRT_BUILD_DRIVER_GALAXYXR}")
 message(STATUS "#    DRIVER_HYDRA:                ${XRT_BUILD_DRIVER_HYDRA}")
 message(STATUS "#    DRIVER_ILLIXR:               ${XRT_BUILD_DRIVER_ILLIXR}")
 message(STATUS "#    DRIVER_NS:                   ${XRT_BUILD_DRIVER_NS}")

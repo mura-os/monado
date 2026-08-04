@@ -181,3 +181,11 @@ add_library(xrt-external-vdf INTERFACE)
 target_include_directories(
 	xrt-external-vdf SYSTEM INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/valve-file-vdf
 	)
+
+# titan-server camera stream client
+if(XRT_FEATURE_TITAN_PASSTHROUGH)
+	add_library(xrt-external-titan INTERFACE)
+	target_include_directories(
+		xrt-external-titan SYSTEM INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/titan
+		)
+endif()
