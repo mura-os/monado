@@ -1,7 +1,8 @@
 # Samsung Galaxy XR (SM-I610) on Linux
 
 3DoF Monado support for the Samsung Galaxy XR running desktop Linux: this
-driver (IMU + optics) plus the `galaxyxr` compositor backend in
+driver (IMU + optics, with optional eye tracking) plus the `galaxyxr`
+compositor backend in
 `src/xrt/compositor/main/comp_window_galaxyxr.c` (dual DRM lease direct mode).
 Both autodetect via the device-tree model (`SM-I610` / `Samsung XR`).
 Camera passthrough (`XR_ENVIRONMENT_BLEND_MODE_ALPHA_BLEND` via titan-server)
@@ -123,6 +124,33 @@ core `/interaction_profiles/htc/vive_pro` interaction profile. Monado uses
 that profile as a compatibility profile for Galaxy XR because OpenXR has no
 generic headset power-button component. The physical input remains named as
 a Galaxy XR power click inside the driver.
+
+
+## Eye tracking
+
+When `libgalaxyxr-eyetracking` 0.2 or newer with its threaded API is available
+at configure time, `XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING` adds Galaxy XR
+support for `XR_EXT_eye_gaze_interaction`. Acquisition is demand-driven through
+Monado's eye-tracking feature lifecycle: the QNN context and Titan eye-camera
+stream open when an application first locates an eye-gaze action space, and
+close when the last user releases it.
+The build dependency is provided by the `libgalaxyxr-eyetracking-dev`
+package.
+
+The production path is fixed to the library's chained HVX-to-QNN preprocessor
+and the four-camera 30 FPS mode. The driver publishes the OEM graph's fused
+`display_gaze` tangent prediction because the experimental viewer found it more
+stable under monocular occlusion than an arithmetic average of the two
+per-eye directions. It maps the graph output into the OpenXR view convention
+as `normalize(-display_x, display_y, -1)`, turns that direction into the
+standard `-Z`-forward gaze pose, and composes it with the timestamped HMD pose.
+The gaze origin remains the head origin: the graph's pupil centres and the
+display-profile view origins have not yet been established as anatomical gaze
+origins.
+
+No calibration is applied or persisted. The point-calibration work in the
+experimental OpenXR viewer remains research-only; integrating it needs a
+separate per-user calibration design and explicit validity handling.
 
 
 ## Optics
@@ -993,3 +1021,123 @@ default blend mode preference is alpha).
   reacquire path.
 - One unexplained: hello_xr (Vulkan2 plugin) once failed to reach the
   session loop while xrgears worked; not reproduced enough to root-cause.
+
+## Future pipeline ideas
+
+The current driver uses a simple design: it squashes all submitted layers into
+a single stereo image. The diagrams below show logical SDE layers; in practice,
+each full-FOV layer must still be source-split across the eye panel's four
+888-pixel-wide mixer columns.
+
+```text
+passthrough cameras -> IFE --+
+                             +-> gfx N-layer compositor -> SDE DMA scanout
+application layers ----------+
+```
+
+### Separate passthrough and application flows
+
+One possible improvement is to split passthrough and application content into
+separate flows:
+
+```text
+passthrough cameras -> IFE -> IPE                    -> SDE VIG scanout
+application layers --------> gfx N-layer compositor -> SDE DMA scanout
+```
+
+This requires further research because little is currently known about IPE. The
+work would include:
+
+1. teaching `titan-server` to warp camera images with IPE;
+2. defining a warp that accounts for distortion from the camera and display
+   lenses, camera rolling shutter, and display rolling scanout;
+3. choosing an output format, synchronization model, and source-split layout
+   that the SDE can scan out directly. Master VIG pipes accept YUV and can
+   scale, whereas DMA pipes require packed RGB and cannot scale;
+4. measuring image quality and end-to-end latency to determine whether the
+   design is practical.
+
+This approach would allow passthrough video frames to bypass Adreno. The gfx
+N-layer compositor would composite and reproject only application layers, while
+the SDE would blend the camera and application overlays.
+
+### Eye-tracked quad views (context and inset)
+
+Another option is to use eye-tracked quad views:
+
+```text
+passthrough cameras -> IFE --+
+                             +-> gfx N-layer compositor
+application layers ----------+             |
+                                            +-> context -> SDE VIG scale/scanout
+                                            +-> inset  ---> SDE DMA scanout
+```
+
+The gfx N-layer compositor would produce two images for each eye: a low-density
+full-FOV context image and a full-density inset centered on the current gaze
+direction. A possible starting point is a context image rendered at one-half to
+one-quarter resolution in each dimension and an approximately 1000x1000-pixel
+inset. VIG pipes would scale the context image to the panel resolution, and DMA
+pipes would scan out the inset at 1:1. The SDE would blend the two layers.
+
+The basic SDE composition is already proven on glass at 90 Hz: a
+reduced-resolution XRGB8888 full-FOV layer can be scaled through four VIG pipes
+while a 1:1 XRGB8888 foreground is scanned out through DMA. Integrating that
+topology with Monado's rendering and eye tracking remains future work. The
+display tests also establish several implementation constraints:
+
+- A full-FOV VIG layer uses four 888x3840 destination columns in the known-good
+  90 Hz layout. The source splits need the device-matched QSEED3-lite phase and
+  neighbor-overfetch configuration to avoid seams between VIG pipes.
+- No plane destination may cross the per-eye `x=1776` dual-DSI boundary. A
+  gaze-controlled inset that crosses this boundary must be split into two KMS
+  rectangles. For a 1:1 packed-RGB inset, multirect can place both rectangles
+  on one physical DMA pipe.
+- The seam between the context and inset images is separate from the internal
+  VIG-split seams. It will likely need an overlap region in which the inset is
+  feathered into the context image.
+
+The main open question is how to render these images as efficiently as
+possible:
+
+- Should all four view rectangles be packed into one large image, or should
+  the context and inset views use separate stereo images?
+- Should the compositor leave a hole in the context output beneath the inset
+  to avoid processing the same region twice? This would reduce compositor work,
+  but not the application's rendering cost unless the application also avoids
+  rendering that part of its context view.
+- Can the SDE's untested `excl_rect_v1` property suppress context fetches under
+  the inset without interfering with the overlap needed for feathering?
+
+NV12 and RGB565 remain possible lower-bandwidth formats for the context image,
+but XRGB8888 is the on-glass baseline. Existing overlay experiments also show
+that source-buffer bandwidth alone does not determine the underrun limits;
+downstream fetch latency and QoS must be considered as well.
+
+### Separate flows with quad views
+
+The two approaches could ultimately be combined:
+
+```text
+passthrough cameras -> IFE -> IPE --------------------> SDE VIG scanout
+application layers --------> gfx N-layer compositor
+                                        |
+                                        +-> context -> SDE VIG scale/scanout
+                                        +-> inset  ---> SDE DMA scanout
+```
+
+On paper, this appears to be the best option: passthrough video would bypass
+Adreno, while separate context and inset images would reduce GPU work and memory
+bandwidth.
+
+The main limitation is VIG availability. Each eye's DPU has four physical VIG
+pipes. The known-good 90 Hz path for the tested scale-2 XRGB8888 composition
+uses all four for one full-FOV layer. Combining each pair of 888-pixel columns
+into one 1776-pixel VIG works at 72 Hz, but the same two-VIG layout produces
+full-screen garbage and continuous interface underruns at 90 Hz.
+
+Two full-FOV VIG layers therefore do not fit the current known-good 90 Hz
+layout. At 72 Hz, assigning two VIG pipes to passthrough and two to the context
+image is a plausible next experiment, not a proven configuration: the existing
+test covers only one two-VIG full-FOV layer. The proposed 72 Hz layout requires
+on-glass testing with the complete composition.

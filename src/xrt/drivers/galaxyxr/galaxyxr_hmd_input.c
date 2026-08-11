@@ -29,6 +29,9 @@ enum galaxyxr_input_index
 	GXR_INPUT_HEAD_POSE,
 	GXR_INPUT_HEAD_DETECT,
 	GXR_INPUT_POWER_CLICK,
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+	GXR_INPUT_EYE_GAZE_POSE,
+#endif
 };
 
 DEBUG_GET_ONCE_OPTION(galaxyxr_power_device, "GALAXYXR_POWER_DEVICE", "/dev/input/event2")
@@ -41,7 +44,20 @@ static struct xrt_binding_input_pair vive_pro_inputs_galaxyxr[] = {
     {XRT_INPUT_VIVEPRO_SYSTEM_CLICK, XRT_INPUT_GALAXYXR_POWER_CLICK},
 };
 
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+static struct xrt_binding_input_pair eye_gaze_inputs_galaxyxr[] = {
+    {XRT_INPUT_GENERIC_EYE_GAZE_POSE, XRT_INPUT_GENERIC_EYE_GAZE_POSE},
+};
+#endif
+
 static struct xrt_binding_profile galaxyxr_binding_profiles[] = {
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+    {
+        .name = XRT_DEVICE_EYE_GAZE_INTERACTION,
+        .inputs = eye_gaze_inputs_galaxyxr,
+        .input_count = ARRAY_SIZE(eye_gaze_inputs_galaxyxr),
+    },
+#endif
     {
         .name = XRT_DEVICE_VIVE_PRO,
         .inputs = vive_pro_inputs_galaxyxr,
@@ -85,6 +101,9 @@ galaxyxr_hmd_input_init(struct galaxyxr_hmd_input *input,
 	xdev->inputs[GXR_INPUT_HEAD_DETECT].name = XRT_INPUT_GENERIC_HEAD_DETECT;
 	xdev->inputs[GXR_INPUT_POWER_CLICK].name = XRT_INPUT_GALAXYXR_POWER_CLICK;
 	xdev->inputs[GXR_INPUT_POWER_CLICK].active = true;
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+	xdev->inputs[GXR_INPUT_EYE_GAZE_POSE].name = XRT_INPUT_GENERIC_EYE_GAZE_POSE;
+#endif
 	xdev->binding_profiles = galaxyxr_binding_profiles;
 	xdev->binding_profile_count = ARRAY_SIZE(galaxyxr_binding_profiles);
 

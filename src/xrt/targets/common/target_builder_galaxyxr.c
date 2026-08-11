@@ -63,6 +63,9 @@ galaxyxr_open_system_impl(struct xrt_builder *xb,
 
 	xsysd->static_xdevs[xsysd->static_xdev_count++] = head;
 	tbrh->head = head;
+	if (head->supported.eye_gaze) {
+		tbrh->eyes = head;
+	}
 
 	return XRT_SUCCESS;
 }

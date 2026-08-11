@@ -12,6 +12,10 @@
 #include "galaxyxr_profile.h"
 #include "galaxyxr_ssc.h"
 
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+#include "galaxyxr_eye_tracking.h"
+#endif
+
 #include "xrt/xrt_config_build.h"
 #include "xrt/xrt_defines.h"
 #include "xrt/xrt_device.h"
@@ -29,6 +33,7 @@
 #include "math/m_imu_xio_ahrs.h"
 #include "math/m_mathinclude.h"
 #include "math/m_relation_history.h"
+#include "math/m_space.h"
 
 #include "util/u_debug.h"
 #include "util/u_device.h"
@@ -51,9 +56,12 @@
 
 enum galaxyxr_sensor_event
 {
-	GXR_SENSOR_EVENT_STOP,
+	GXR_SENSOR_EVENT_CONTROL,
 	GXR_SENSOR_EVENT_SSC,
 	GXR_SENSOR_EVENT_POWER,
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+	GXR_SENSOR_EVENT_EYE_TRACKING,
+#endif
 };
 
 DEBUG_GET_ONCE_LOG_OPTION(galaxyxr_log, "GALAXYXR_LOG", U_LOGGING_INFO)
@@ -121,8 +129,13 @@ struct galaxyxr_hmd
 
 	struct galaxyxr_hmd_input input;
 
-	//! Main-thread-owned eventfd used to interrupt the sensor thread.
-	int sensor_stop_fd;
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+	struct galaxyxr_eye_tracking eye_tracking;
+#endif
+
+	xrt_atomic_s32_t sensor_stop_requested;
+	//! Wakes the sensor thread after a control-state change.
+	int sensor_control_fd;
 };
 
 static inline struct galaxyxr_hmd *
@@ -279,6 +292,62 @@ sample_cb(void *ud, const struct galaxyxr_ssc_sample *sample)
 static int
 sensor_epoll_add(int epoll_fd, int fd, enum galaxyxr_sensor_event source);
 
+static void
+sensor_control_drain(struct galaxyxr_hmd *hmd)
+{
+	eventfd_t value;
+	int ret;
+	do {
+		ret = eventfd_read(hmd->sensor_control_fd, &value);
+	} while (ret < 0 && errno == EINTR);
+	if (ret < 0 && errno != EAGAIN) {
+		GXR_WARN(hmd, "Could not read sensor control eventfd: %s", strerror(errno));
+	}
+}
+
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+static void
+sensor_eye_tracking_close(struct galaxyxr_hmd *hmd, int epoll_fd, int *eye_fd)
+{
+	if (*eye_fd < 0) {
+		return;
+	}
+
+	if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, *eye_fd, NULL) < 0 && errno != ENOENT) {
+		GXR_WARN(hmd, "Could not remove eye tracking from sensor epoll: %s", strerror(errno));
+	}
+	galaxyxr_eye_tracking_close(&hmd->eye_tracking);
+	*eye_fd = -1;
+}
+
+static void
+sensor_eye_tracking_sync(struct galaxyxr_hmd *hmd, int epoll_fd, int *eye_fd)
+{
+	bool enabled = galaxyxr_eye_tracking_is_enabled(&hmd->eye_tracking);
+	if (enabled == (*eye_fd >= 0)) {
+		return;
+	}
+
+	if (!enabled) {
+		sensor_eye_tracking_close(hmd, epoll_fd, eye_fd);
+		return;
+	}
+
+	*eye_fd = galaxyxr_eye_tracking_open(&hmd->eye_tracking, &hmd->base, &hmd->log_level);
+	if (*eye_fd < 0) {
+		galaxyxr_eye_tracking_set_enabled(&hmd->eye_tracking, false);
+		return;
+	}
+
+	int ret = sensor_epoll_add(epoll_fd, *eye_fd, GXR_SENSOR_EVENT_EYE_TRACKING);
+	if (ret < 0) {
+		GXR_ERROR(hmd, "Could not add eye tracking to sensor epoll: %s", strerror(-ret));
+		sensor_eye_tracking_close(hmd, epoll_fd, eye_fd);
+		galaxyxr_eye_tracking_set_enabled(&hmd->eye_tracking, false);
+	}
+}
+#endif
+
 static void *
 sensor_thread_fn(void *ptr)
 {
@@ -286,6 +355,9 @@ sensor_thread_fn(void *ptr)
 	int epoll_fd = -1;
 	int power_fd = -1;
 	bool power_watched = false;
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+	int eye_fd = -1;
+#endif
 
 	epoll_fd = epoll_create1(EPOLL_CLOEXEC);
 	if (epoll_fd < 0) {
@@ -293,9 +365,9 @@ sensor_thread_fn(void *ptr)
 		goto out;
 	}
 
-	int ret = sensor_epoll_add(epoll_fd, hmd->sensor_stop_fd, GXR_SENSOR_EVENT_STOP);
+	int ret = sensor_epoll_add(epoll_fd, hmd->sensor_control_fd, GXR_SENSOR_EVENT_CONTROL);
 	if (ret < 0) {
-		GXR_ERROR(hmd, "Could not add stop eventfd to sensor epoll: %s", strerror(-ret));
+		GXR_ERROR(hmd, "Could not add control eventfd to sensor epoll: %s", strerror(-ret));
 		goto out;
 	}
 	ret = sensor_epoll_add(epoll_fd, hmd->ssc.fd, GXR_SENSOR_EVENT_SSC);
@@ -317,7 +389,7 @@ sensor_thread_fn(void *ptr)
 
 	u_linux_try_to_set_realtime_priority_on_thread(hmd->log_level, "Galaxy XR IMU");
 
-	struct epoll_event events[3];
+	struct epoll_event events[4];
 	for (;;) {
 		int event_count = epoll_wait(epoll_fd, events, ARRAY_SIZE(events), -1);
 		if (event_count < 0) {
@@ -328,11 +400,18 @@ sensor_thread_fn(void *ptr)
 			goto out;
 		}
 
-		// The stop request takes priority over any hardware events in the batch.
+		// Control changes take priority over hardware events in the batch.
 		for (int i = 0; i < event_count; i++) {
-			if (events[i].data.u32 == GXR_SENSOR_EVENT_STOP) {
+			if (events[i].data.u32 != GXR_SENSOR_EVENT_CONTROL) {
+				continue;
+			}
+			sensor_control_drain(hmd);
+			if (xrt_atomic_s32_load(&hmd->sensor_stop_requested) != 0) {
 				goto out;
 			}
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+			sensor_eye_tracking_sync(hmd, epoll_fd, &eye_fd);
+#endif
 		}
 
 		for (int i = 0; i < event_count; i++) {
@@ -365,13 +444,35 @@ sensor_thread_fn(void *ptr)
 				}
 				break;
 			}
-			case GXR_SENSOR_EVENT_STOP: break;
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+			case GXR_SENSOR_EVENT_EYE_TRACKING:
+				if (eye_fd < 0) {
+					break;
+				}
+				if ((events[i].events & (EPOLLERR | EPOLLHUP)) != 0) {
+					GXR_ERROR(hmd, "Eye tracking event fd reported an error");
+					galaxyxr_eye_tracking_set_enabled(&hmd->eye_tracking, false);
+					sensor_eye_tracking_close(hmd, epoll_fd, &eye_fd);
+					break;
+				}
+				if (!galaxyxr_eye_tracking_process_events(&hmd->eye_tracking, &hmd->base,
+				                                          &hmd->log_level)) {
+					galaxyxr_eye_tracking_set_enabled(&hmd->eye_tracking, false);
+					sensor_eye_tracking_close(hmd, epoll_fd, &eye_fd);
+				}
+				break;
+#endif
+			case GXR_SENSOR_EVENT_CONTROL: break;
 			default: GXR_WARN(hmd, "Unknown sensor epoll event: %u", events[i].data.u32); break;
 			}
 		}
 	}
 
 out:
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+	galaxyxr_eye_tracking_set_enabled(&hmd->eye_tracking, false);
+	sensor_eye_tracking_close(hmd, epoll_fd, &eye_fd);
+#endif
 	if (power_fd >= 0) {
 		close(power_fd);
 	}
@@ -396,30 +497,37 @@ sensor_epoll_add(int epoll_fd, int fd, enum galaxyxr_sensor_event source)
 }
 
 static int
-sensor_stop_event_init(struct galaxyxr_hmd *hmd)
+sensor_control_event_init(struct galaxyxr_hmd *hmd)
 {
-	hmd->sensor_stop_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
-	if (hmd->sensor_stop_fd < 0) {
+	hmd->sensor_control_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+	if (hmd->sensor_control_fd < 0) {
 		return -errno;
 	}
 	return 0;
 }
 
 static void
-sensor_thread_request_stop(struct galaxyxr_hmd *hmd)
+sensor_thread_notify(struct galaxyxr_hmd *hmd)
 {
-	if (hmd->sensor_stop_fd < 0) {
+	if (hmd->sensor_control_fd < 0) {
 		return;
 	}
 
 	eventfd_t value = 1;
 	int ret;
 	do {
-		ret = eventfd_write(hmd->sensor_stop_fd, value);
+		ret = eventfd_write(hmd->sensor_control_fd, value);
 	} while (ret < 0 && errno == EINTR);
 	if (ret < 0 && errno != EAGAIN) {
-		GXR_WARN(hmd, "Could not wake sensor thread for shutdown: %s", strerror(errno));
+		GXR_WARN(hmd, "Could not wake sensor thread: %s", strerror(errno));
 	}
+}
+
+static void
+sensor_thread_request_stop(struct galaxyxr_hmd *hmd)
+{
+	xrt_atomic_s32_store(&hmd->sensor_stop_requested, 1);
+	sensor_thread_notify(hmd);
 }
 
 
@@ -438,9 +546,12 @@ galaxyxr_hmd_destroy(struct xrt_device *xdev)
 		sensor_thread_request_stop(hmd);
 		os_thread_helper_destroy(&hmd->sensor_thread);
 	}
-	if (hmd->sensor_stop_fd >= 0) {
-		close(hmd->sensor_stop_fd);
+	if (hmd->sensor_control_fd >= 0) {
+		close(hmd->sensor_control_fd);
 	}
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+	galaxyxr_eye_tracking_destroy(&hmd->eye_tracking);
+#endif
 	if (hmd->ssc_opened) {
 		galaxyxr_ssc_close(&hmd->ssc);
 	}
@@ -487,19 +598,11 @@ galaxyxr_hmd_get_compositor_info(struct xrt_device *xdev,
 	return XRT_SUCCESS;
 }
 
-static xrt_result_t
-galaxyxr_hmd_get_tracked_pose(struct xrt_device *xdev,
-                              enum xrt_input_name name,
-                              int64_t at_timestamp_ns,
-                              struct xrt_space_relation *out_relation)
+static void
+galaxyxr_hmd_get_head_relation(struct galaxyxr_hmd *hmd,
+                               int64_t at_timestamp_ns,
+                               struct xrt_space_relation *out_relation)
 {
-	struct galaxyxr_hmd *hmd = galaxyxr_hmd(xdev);
-
-	if (name != XRT_INPUT_GENERIC_HEAD_POSE) {
-		U_LOG_XDEV_UNSUPPORTED_INPUT(&hmd->base, hmd->log_level, name);
-		return XRT_ERROR_INPUT_UNSUPPORTED;
-	}
-
 	struct xrt_space_relation fallback;
 	int64_t query_qtimer_ns = 0;
 	os_mutex_lock(&hmd->mutex);
@@ -513,7 +616,7 @@ galaxyxr_hmd_get_tracked_pose(struct xrt_device *xdev,
 	os_mutex_unlock(&hmd->mutex);
 	if (!converted || query_qtimer_ns <= 0) {
 		*out_relation = fallback;
-		return XRT_SUCCESS;
+		return;
 	}
 
 	int64_t latest_timestamp_ns = 0;
@@ -527,9 +630,69 @@ galaxyxr_hmd_get_tracked_pose(struct xrt_device *xdev,
 	    M_RELATION_HISTORY_RESULT_INVALID) {
 		*out_relation = fallback;
 	}
+}
 
+static xrt_result_t
+galaxyxr_hmd_get_tracked_pose(struct xrt_device *xdev,
+                              enum xrt_input_name name,
+                              int64_t at_timestamp_ns,
+                              struct xrt_space_relation *out_relation)
+{
+	struct galaxyxr_hmd *hmd = galaxyxr_hmd(xdev);
+
+	if (name == XRT_INPUT_GENERIC_HEAD_POSE) {
+		galaxyxr_hmd_get_head_relation(hmd, at_timestamp_ns, out_relation);
+		return XRT_SUCCESS;
+	}
+
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+	if (name == XRT_INPUT_GENERIC_EYE_GAZE_POSE && hmd->base.supported.eye_gaze) {
+		struct xrt_space_relation gaze_relation = XRT_SPACE_RELATION_ZERO;
+		galaxyxr_eye_tracking_get_relation(&hmd->eye_tracking, at_timestamp_ns, &gaze_relation);
+		if (gaze_relation.relation_flags == 0) {
+			*out_relation = (struct xrt_space_relation)XRT_SPACE_RELATION_ZERO;
+			return XRT_SUCCESS;
+		}
+
+		struct xrt_space_relation head_relation = XRT_SPACE_RELATION_ZERO;
+		galaxyxr_hmd_get_head_relation(hmd, at_timestamp_ns, &head_relation);
+		struct xrt_relation_chain chain = {0};
+		m_relation_chain_push_relation(&chain, &gaze_relation);
+		m_relation_chain_push_relation(&chain, &head_relation);
+		m_relation_chain_resolve(&chain, out_relation);
+		return XRT_SUCCESS;
+	}
+#endif
+
+	U_LOG_XDEV_UNSUPPORTED_INPUT(&hmd->base, hmd->log_level, name);
+	return XRT_ERROR_INPUT_UNSUPPORTED;
+}
+
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+static xrt_result_t
+galaxyxr_hmd_begin_feature(struct xrt_device *xdev, enum xrt_device_feature_type type)
+{
+	struct galaxyxr_hmd *hmd = galaxyxr_hmd(xdev);
+	if (type != XRT_DEVICE_FEATURE_EYE_TRACKING || !hmd->base.supported.eye_gaze) {
+		return XRT_ERROR_FEATURE_NOT_SUPPORTED;
+	}
+	galaxyxr_eye_tracking_set_enabled(&hmd->eye_tracking, true);
+	sensor_thread_notify(hmd);
 	return XRT_SUCCESS;
 }
+
+static xrt_result_t
+galaxyxr_hmd_end_feature(struct xrt_device *xdev, enum xrt_device_feature_type type)
+{
+	struct galaxyxr_hmd *hmd = galaxyxr_hmd(xdev);
+	if (type != XRT_DEVICE_FEATURE_EYE_TRACKING || !hmd->base.supported.eye_gaze) {
+		return XRT_ERROR_FEATURE_NOT_SUPPORTED;
+	}
+	galaxyxr_eye_tracking_set_enabled(&hmd->eye_tracking, false);
+	sensor_thread_notify(hmd);
+	return XRT_SUCCESS;
+}
+#endif
 
 static xrt_result_t
 galaxyxr_compute_distortion(struct xrt_device *xdev, uint32_t view, float u, float v, struct xrt_uv_triplet *out_result)
@@ -646,7 +809,7 @@ galaxyxr_hmd_create(void)
 	struct galaxyxr_hmd *hmd =
 	    U_DEVICE_ALLOCATE(struct galaxyxr_hmd, flags, GALAXYXR_HMD_INPUT_COUNT, 0);
 	hmd->log_level = debug_get_log_option_galaxyxr_log();
-	hmd->sensor_stop_fd = -1;
+	hmd->sensor_control_fd = -1;
 
 	const char *axes = debug_get_option_galaxyxr_imu_axes();
 	if (!parse_axis_map(axes, hmd->axis_src, hmd->axis_sign)) {
@@ -688,6 +851,10 @@ galaxyxr_hmd_create(void)
 	hmd->base.get_view_poses = galaxyxr_hmd_get_view_poses;
 	hmd->base.get_compositor_info = galaxyxr_hmd_get_compositor_info;
 	hmd->base.destroy = galaxyxr_hmd_destroy;
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+	hmd->base.begin_feature = galaxyxr_hmd_begin_feature;
+	hmd->base.end_feature = galaxyxr_hmd_end_feature;
+#endif
 
 	hmd->base.name = XRT_DEVICE_GENERIC_HMD;
 	hmd->base.device_type = XRT_DEVICE_TYPE_HMD;
@@ -695,6 +862,9 @@ galaxyxr_hmd_create(void)
 	hmd->base.supported.orientation_tracking = true;
 	hmd->base.supported.position_tracking = false;
 	hmd->base.supported.compositor_info = true;
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+	hmd->base.supported.eye_gaze = galaxyxr_eye_tracking_init(&hmd->eye_tracking, &hmd->base, &hmd->log_level);
+#endif
 
 	hmd->base.hmd->screens[0].nominal_frame_interval_ns =
 	    time_s_to_ns(1.0 / (double)debug_get_num_option_galaxyxr_hz());
@@ -841,9 +1011,9 @@ galaxyxr_hmd_create(void)
 		goto cleanup;
 	}
 	hmd->ssc_opened = true;
-	ret = sensor_stop_event_init(hmd);
+	ret = sensor_control_event_init(hmd);
 	if (ret < 0) {
-		GXR_ERROR(hmd, "Failed to create sensor stop eventfd: %s", strerror(-ret));
+		GXR_ERROR(hmd, "Failed to create sensor control eventfd: %s", strerror(-ret));
 		goto cleanup;
 	}
 

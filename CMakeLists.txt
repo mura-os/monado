@@ -186,6 +186,22 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 	set(XRT_HAVE_LINUX YES)
 	# Compositor backend
 	find_package(X11)
+	find_package(GalaxyXREyeTracking 0.2 QUIET CONFIG)
+	if(GalaxyXREyeTracking_FOUND AND TARGET GalaxyXR::EyeTracking)
+		include(CMakePushCheckState)
+		include(CheckSymbolExists)
+		cmake_push_check_state(RESET)
+		set(CMAKE_REQUIRED_LIBRARIES GalaxyXR::EyeTracking)
+		unset(XRT_HAVE_GALAXYXR_EYE_TRACKING_THREADED_API CACHE)
+		check_symbol_exists(
+			galaxyxr_eyetracking_get_event_fd
+			galaxyxr/eyetracking.h
+			XRT_HAVE_GALAXYXR_EYE_TRACKING_THREADED_API
+			)
+		cmake_pop_check_state()
+	else()
+		set(XRT_HAVE_GALAXYXR_EYE_TRACKING_THREADED_API FALSE)
+	endif()
 
 	find_package(udev REQUIRED)
 	set(XRT_HAVE_V4L2 TRUE)
@@ -380,6 +396,14 @@ option_with_deps(XRT_BUILD_DRIVER_RIFT_SENSOR "Enable Oculus Rift Sensor (DK2/CV
 option_with_deps(XRT_BUILD_DRIVER_RIFT_S "Enable Oculus Rift S device driver" DEPENDS XRT_HAVE_V4L2)
 option_with_deps(XRT_BUILD_DRIVER_ROKID "Enable Rokid driver" DEPENDS "XRT_HAVE_LIBUSB")
 option_with_deps(XRT_BUILD_DRIVER_GALAXYXR "Enable Samsung Galaxy XR driver" DEPENDS XRT_HAVE_LINUX)
+option_with_deps(
+	XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+	"Enable eye tracking in the Samsung Galaxy XR driver"
+	DEPENDS
+		XRT_BUILD_DRIVER_GALAXYXR
+		GalaxyXREyeTracking_FOUND
+		XRT_HAVE_GALAXYXR_EYE_TRACKING_THREADED_API
+	)
 option_with_deps(XRT_BUILD_DRIVER_STEAMVR_LIGHTHOUSE "Enable SteamVR Lighthouse driver" DEPENDS XRT_HAVE_LINUX XRT_MODULE_AUX_VIVE XRT_MODULE_AUX_HTC)
 option_with_deps(XRT_BUILD_DRIVER_SURVIVE "Enable libsurvive driver" DEPENDS SURVIVE_FOUND XRT_MODULE_AUX_VIVE XRT_MODULE_AUX_HTC)
 option_with_deps(XRT_BUILD_DRIVER_ULV2 "Enable Ultraleap v2 driver" DEPENDS LeapV2_FOUND)
@@ -746,6 +770,7 @@ message(STATUS "#    DRIVER_EUROC:                ${XRT_BUILD_DRIVER_EUROC}")
 message(STATUS "#    DRIVER_HANDTRACKING:         ${XRT_BUILD_DRIVER_HANDTRACKING}")
 message(STATUS "#    DRIVER_HDK:                  ${XRT_BUILD_DRIVER_HDK}")
 message(STATUS "#    DRIVER_GALAXYXR:             ${XRT_BUILD_DRIVER_GALAXYXR}")
+message(STATUS "#    DRIVER_GALAXYXR_EYE_TRACKING: ${XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING}")
 message(STATUS "#    DRIVER_HYDRA:                ${XRT_BUILD_DRIVER_HYDRA}")
 message(STATUS "#    DRIVER_ILLIXR:               ${XRT_BUILD_DRIVER_ILLIXR}")
 message(STATUS "#    DRIVER_NS:                   ${XRT_BUILD_DRIVER_NS}")

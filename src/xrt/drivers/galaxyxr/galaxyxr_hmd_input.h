@@ -19,7 +19,11 @@
 extern "C" {
 #endif
 
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+#define GALAXYXR_HMD_INPUT_COUNT 4
+#else
 #define GALAXYXR_HMD_INPUT_COUNT 3
+#endif
 
 struct galaxyxr_hmd_input
 {
