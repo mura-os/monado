@@ -130,10 +130,15 @@ a Galaxy XR power click inside the driver.
 
 When `libgalaxyxr-eyetracking` 0.2 or newer with its threaded API is available
 at configure time, `XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING` adds Galaxy XR
-support for `XR_EXT_eye_gaze_interaction`. Acquisition is demand-driven through
-Monado's eye-tracking feature lifecycle: the QNN context and Titan eye-camera
-stream open when an application first locates an eye-gaze action space, and
-close when the last user releases it.
+support for `XR_EXT_eye_gaze_interaction`. Acquisition is demand-driven and
+use-counted: gaze users are XR clients (through Monado's refcounted
+eye-tracking feature lifecycle) and the foveation fovea (which holds a use
+for exactly the compositor's `begin_foveation`/`end_foveation` span, so the
+cameras power down the moment foveated rendering pauses — user absent,
+session over — and come back when it resumes). The QNN context and Titan
+eye-camera stream open when the count leaves zero and close when it returns
+there; failures close the stream and retry on a backoff while the need
+persists.
 The build dependency is provided by the `libgalaxyxr-eyetracking-dev`
 package.
 
@@ -189,6 +194,52 @@ The earlier reverse-engineering of the qvr svrapi lens tables
 (`lens`/`mono` modes, panel/fov/cant guesses) is superseded by the profile
 and was removed; see the git history and the resource map entry if those
 tables are ever needed again.
+
+## Foveation
+
+The driver implements `xrt_device::get_foveation_map`: every composited
+frame it draws a two-level hardware foveation map for the gfx compositor —
+a full-rate disc of constant view angle around the gaze (12 deg radius by
+default), reduced shading everywhere else. The disc is evaluated through the
+display profile's lens mapping, so it is circular as perceived and warps
+with the distortion on the panel. The compositor brackets foveated
+compositing with `begin_foveation`/`end_foveation`, announcing the fixed
+map geometry up front — the lens tables are built there, once, for the
+exact grid — and the fovea holds an eye-tracking use for the span so gaze
+works outside of `XR_EXT_eye_gaze_interaction` sessions
+(`GALAXYXR_FOVEATION_GAZE` turns that off, the fovea then sits at the panel
+centre). The per-frame draw
+is incremental — per-row span diffs against what each compositor buffer
+already shows.
+
+The draw budget is 0.05 ms per fill, and the number to hold against it is
+measured with `GALAXYXR_FOVEATION_DRAW=always`: the incremental skips are
+opportunistic — they depend on the gaze resting — so `always`, which walks
+the fovea and applies it every fill, is the guaranteed steady-state cost.
+Always test with `always`; incremental-mode timings are informational only.
+Measured against the 888x480 map (90 Hz, live gaze): `always` 0.045 ms avg,
+incremental 0.023 ms avg live / 0.005 ms resting, `full` 0.096 ms avg — the
+whole-map rewrite that otherwise only runs once per staging buffer when the
+map is created.
+
+The mechanism is a `VK_KHR_fragment_shading_rate` attachment: true 8x8 px
+map granularity, 1x1 fragments in the fovea over 4x4 outside (both the FSR
+rate menu and Turnip's scaling cap out at 4x4 per axis, so 4x4 is the
+hardware floor). Measured on the idle desktop at pinned clocks (788 MHz,
+static centre fovea): GPU busy 68% against 77% unfoveated.
+
+`VK_EXT_fragment_density_map` support was implemented, debugged and
+removed again; the `backup/galaxyxr-fdm-foveation` branch preserves the
+complete implementation (compositor FDM machinery, host-written linear
+`GENERAL` map images, GMEM-bin-quantized map drawing) and its README
+documents the findings. Summary: on this Turnip, FDM renders at GMEM bin
+granularity (768x960 px here — the map is sampled once per bin), needs
+`TU_DEBUG=nobinmerging` to not freeze merged bins (`tu_merge_tiles` bug),
+must never see density 0 (bins are skipped and keep stale content, blob
+semantics), and measured a net GPU loss (84% busy vs 77% unfoveated) — the
+bin scaling costs more than the shading it saves. Revisit when the merge
+bug is fixed and `fragmentDensityMapDynamic` (or
+`VK_EXT_fragment_density_map2`) appears.
 
 ## Android-side resource map
 
@@ -321,6 +372,11 @@ Hardware nodes (Linux side, gathered along the way):
 | `GALAXYXR_IMU_CAL` | true | factory IMU intrinsics + SSC online gyro bias correction |
 | `GALAXYXR_DISTORTION` | profile-mono | `profile` (with CAC), `profile-mono`, `none` |
 | `GALAXYXR_PROFILE_PATH` | unset | override the device_profile.textproto location |
+| `GALAXYXR_FOVEATION` | true | draw gaze-driven foveation maps for the compositor (see Foveation) |
+| `GALAXYXR_FOVEA_RADIUS_DEG` | 12 | full-rate fovea disc angular radius |
+| `GALAXYXR_FOVEATION_GAZE` | true | fovea follows the gaze, eye cameras on demand; off = fovea at panel centre |
+| `GALAXYXR_FOVEATION_DRAW` | incremental | test modes: `always` walks the fovea every fill, bypassing the 0.15 deg gaze quantization; `full` also rewrites the whole map every fill, the worst-case draw |
+| `XRT_COMPOSITOR_FOVEATION` | auto | foveation: `auto`, `fsr`, `off` |
 | `GALAXYXR_POWER_DEVICE` | `/dev/input/event2` | `pmic_pwrkey` evdev device used for the OpenXR system click |
 | `XRT_COMPOSITOR_PRESENCE_OFF_DELAY_MS` | 500 | keep displaying this long after the user goes absent |
 | `XRT_COMPOSITOR_GALAXYXR` | true | backend autodetection gate |

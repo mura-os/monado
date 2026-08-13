@@ -35,7 +35,14 @@ struct galaxyxr_eye_tracking
 {
 	struct m_relation_history *relation_history;
 	galaxyxr_eyetracking tracker;
-	xrt_atomic_s32_t enabled;
+
+	/*!
+	 * How many users need gaze right now: XR clients (one use for all of
+	 * them, the device feature lifecycle is refcounted upstream) and the
+	 * foveation fovea. The cameras run while it is above zero.
+	 */
+	xrt_atomic_s32_t use_count;
+
 	char model_path[PATH_MAX];
 };
 
@@ -46,10 +53,13 @@ void
 galaxyxr_eye_tracking_destroy(struct galaxyxr_eye_tracking *et);
 
 void
-galaxyxr_eye_tracking_set_enabled(struct galaxyxr_eye_tracking *et, bool enabled);
+galaxyxr_eye_tracking_retain(struct galaxyxr_eye_tracking *et);
+
+void
+galaxyxr_eye_tracking_release(struct galaxyxr_eye_tracking *et);
 
 bool
-galaxyxr_eye_tracking_is_enabled(struct galaxyxr_eye_tracking *et);
+galaxyxr_eye_tracking_is_needed(struct galaxyxr_eye_tracking *et);
 
 int
 galaxyxr_eye_tracking_open(struct galaxyxr_eye_tracking *et, struct xrt_device *xdev, enum u_logging_level *log_level);

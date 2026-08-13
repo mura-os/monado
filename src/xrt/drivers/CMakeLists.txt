@@ -75,6 +75,8 @@ endif()
 if(XRT_BUILD_DRIVER_GALAXYXR)
 	add_library(
 		drv_galaxyxr STATIC
+		galaxyxr/galaxyxr_foveation.c
+		galaxyxr/galaxyxr_foveation.h
 		galaxyxr/galaxyxr_hmd.c
 		galaxyxr/galaxyxr_hmd_input.c
 		galaxyxr/galaxyxr_hmd_input.h

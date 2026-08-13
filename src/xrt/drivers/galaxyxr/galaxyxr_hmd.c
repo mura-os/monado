@@ -8,6 +8,7 @@
  */
 
 #include "galaxyxr_interface.h"
+#include "galaxyxr_foveation.h"
 #include "galaxyxr_hmd_input.h"
 #include "galaxyxr_profile.h"
 #include "galaxyxr_ssc.h"
@@ -37,6 +38,7 @@
 
 #include "util/u_debug.h"
 #include "util/u_device.h"
+#include "util/u_device_ni.h"
 #include "util/u_distortion_mesh.h"
 #include "util/u_linux.h"
 #include "util/u_logging.h"
@@ -53,6 +55,8 @@
 #define GXR_EYE_H 3840
 #define GXR_PANEL_VTOTAL 3888
 #define GXR_CLOCK_TRACKER_WINDOW_SAMPLES 64
+// How long to back off reopening eye tracking after a failure.
+#define GXR_EYE_RETRY_NS (5LL * 1000 * 1000 * 1000)
 
 enum galaxyxr_sensor_event
 {
@@ -77,6 +81,12 @@ DEBUG_GET_ONCE_OPTION(galaxyxr_profile_path, "GALAXYXR_PROFILE_PATH", NULL)
 // Factory IMU intrinsics from the efs profile plus the SSC online gyro bias;
 // the raw SSC streams apply no calibration at all (registry fac_cal is zero).
 DEBUG_GET_ONCE_BOOL_OPTION(galaxyxr_imu_cal, "GALAXYXR_IMU_CAL", true)
+DEBUG_GET_ONCE_BOOL_OPTION(galaxyxr_foveation, "GALAXYXR_FOVEATION", true)
+DEBUG_GET_ONCE_FLOAT_OPTION(galaxyxr_fovea_radius, "GALAXYXR_FOVEA_RADIUS_DEG", 12.0)
+// Let the fovea follow the gaze: foveation map fills hold an eye tracking
+// use, so the cameras run on demand while foveated frames are composited.
+// Without it (or gaze) the fovea sits at the panel centre.
+DEBUG_GET_ONCE_BOOL_OPTION(galaxyxr_foveation_gaze, "GALAXYXR_FOVEATION_GAZE", true)
 
 #define GXR_TRACE(d, ...) U_LOG_XDEV_IFL_T(&d->base, d->log_level, __VA_ARGS__)
 #define GXR_DEBUG(d, ...) U_LOG_XDEV_IFL_D(&d->base, d->log_level, __VA_ARGS__)
@@ -129,8 +139,17 @@ struct galaxyxr_hmd
 
 	struct galaxyxr_hmd_input input;
 
+	struct galaxyxr_foveation foveation;
+	bool foveation_active;
+	//! Foveation may hold an eye tracking use at all (GALAXYXR_FOVEATION_GAZE).
+	bool foveation_gaze;
+
 #ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
 	struct galaxyxr_eye_tracking eye_tracking;
+	//! The fovea holds an eye tracking use, between begin/end_foveation.
+	bool fovea_gaze_held;
+	//! Sensor-thread only: no eye tracking reopen before this time.
+	int64_t eye_retry_at_ns;
 #endif
 
 	xrt_atomic_s32_t sensor_stop_requested;
@@ -320,22 +339,32 @@ sensor_eye_tracking_close(struct galaxyxr_hmd *hmd, int epoll_fd, int *eye_fd)
 	*eye_fd = -1;
 }
 
+/*!
+ * Make the eye camera stream state match whether anyone needs gaze; failures
+ * close the stream and back off, they never touch the use count — the next
+ * sync retries while the need persists.
+ */
 static void
 sensor_eye_tracking_sync(struct galaxyxr_hmd *hmd, int epoll_fd, int *eye_fd)
 {
-	bool enabled = galaxyxr_eye_tracking_is_enabled(&hmd->eye_tracking);
-	if (enabled == (*eye_fd >= 0)) {
+	bool needed = galaxyxr_eye_tracking_is_needed(&hmd->eye_tracking);
+	if (needed == (*eye_fd >= 0)) {
 		return;
 	}
 
-	if (!enabled) {
+	if (!needed) {
 		sensor_eye_tracking_close(hmd, epoll_fd, eye_fd);
+		GXR_INFO(hmd, "Eye tracking closed, no gaze users left");
+		return;
+	}
+
+	if (os_monotonic_get_ns() < hmd->eye_retry_at_ns) {
 		return;
 	}
 
 	*eye_fd = galaxyxr_eye_tracking_open(&hmd->eye_tracking, &hmd->base, &hmd->log_level);
 	if (*eye_fd < 0) {
-		galaxyxr_eye_tracking_set_enabled(&hmd->eye_tracking, false);
+		hmd->eye_retry_at_ns = os_monotonic_get_ns() + GXR_EYE_RETRY_NS;
 		return;
 	}
 
@@ -343,7 +372,7 @@ sensor_eye_tracking_sync(struct galaxyxr_hmd *hmd, int epoll_fd, int *eye_fd)
 	if (ret < 0) {
 		GXR_ERROR(hmd, "Could not add eye tracking to sensor epoll: %s", strerror(-ret));
 		sensor_eye_tracking_close(hmd, epoll_fd, eye_fd);
-		galaxyxr_eye_tracking_set_enabled(&hmd->eye_tracking, false);
+		hmd->eye_retry_at_ns = os_monotonic_get_ns() + GXR_EYE_RETRY_NS;
 	}
 }
 #endif
@@ -409,9 +438,6 @@ sensor_thread_fn(void *ptr)
 			if (xrt_atomic_s32_load(&hmd->sensor_stop_requested) != 0) {
 				goto out;
 			}
-#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
-			sensor_eye_tracking_sync(hmd, epoll_fd, &eye_fd);
-#endif
 		}
 
 		for (int i = 0; i < event_count; i++) {
@@ -451,14 +477,14 @@ sensor_thread_fn(void *ptr)
 				}
 				if ((events[i].events & (EPOLLERR | EPOLLHUP)) != 0) {
 					GXR_ERROR(hmd, "Eye tracking event fd reported an error");
-					galaxyxr_eye_tracking_set_enabled(&hmd->eye_tracking, false);
 					sensor_eye_tracking_close(hmd, epoll_fd, &eye_fd);
+					hmd->eye_retry_at_ns = os_monotonic_get_ns() + GXR_EYE_RETRY_NS;
 					break;
 				}
 				if (!galaxyxr_eye_tracking_process_events(&hmd->eye_tracking, &hmd->base,
 				                                          &hmd->log_level)) {
-					galaxyxr_eye_tracking_set_enabled(&hmd->eye_tracking, false);
 					sensor_eye_tracking_close(hmd, epoll_fd, &eye_fd);
+					hmd->eye_retry_at_ns = os_monotonic_get_ns() + GXR_EYE_RETRY_NS;
 				}
 				break;
 #endif
@@ -466,11 +492,14 @@ sensor_thread_fn(void *ptr)
 			default: GXR_WARN(hmd, "Unknown sensor epoll event: %u", events[i].data.u32); break;
 			}
 		}
+
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+		sensor_eye_tracking_sync(hmd, epoll_fd, &eye_fd);
+#endif
 	}
 
 out:
 #ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
-	galaxyxr_eye_tracking_set_enabled(&hmd->eye_tracking, false);
 	sensor_eye_tracking_close(hmd, epoll_fd, &eye_fd);
 #endif
 	if (power_fd >= 0) {
@@ -566,6 +595,7 @@ galaxyxr_hmd_destroy(struct xrt_device *xdev)
 
 	os_mutex_destroy(&hmd->mutex);
 
+	galaxyxr_foveation_fini(&hmd->foveation);
 	galaxyxr_profile_free(&hmd->profile[0]);
 	galaxyxr_profile_free(&hmd->profile[1]);
 
@@ -676,7 +706,7 @@ galaxyxr_hmd_begin_feature(struct xrt_device *xdev, enum xrt_device_feature_type
 	if (type != XRT_DEVICE_FEATURE_EYE_TRACKING || !hmd->base.supported.eye_gaze) {
 		return XRT_ERROR_FEATURE_NOT_SUPPORTED;
 	}
-	galaxyxr_eye_tracking_set_enabled(&hmd->eye_tracking, true);
+	galaxyxr_eye_tracking_retain(&hmd->eye_tracking);
 	sensor_thread_notify(hmd);
 	return XRT_SUCCESS;
 }
@@ -688,11 +718,67 @@ galaxyxr_hmd_end_feature(struct xrt_device *xdev, enum xrt_device_feature_type t
 	if (type != XRT_DEVICE_FEATURE_EYE_TRACKING || !hmd->base.supported.eye_gaze) {
 		return XRT_ERROR_FEATURE_NOT_SUPPORTED;
 	}
-	galaxyxr_eye_tracking_set_enabled(&hmd->eye_tracking, false);
+	galaxyxr_eye_tracking_release(&hmd->eye_tracking);
 	sensor_thread_notify(hmd);
 	return XRT_SUCCESS;
 }
 #endif
+
+static xrt_result_t
+galaxyxr_hmd_begin_foveation(struct xrt_device *xdev, const struct xrt_foveation_begin_info *info)
+{
+	struct galaxyxr_hmd *hmd = galaxyxr_hmd(xdev);
+
+	galaxyxr_foveation_begin(&hmd->foveation, info);
+
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+	if (hmd->foveation_gaze && !hmd->fovea_gaze_held) {
+		hmd->fovea_gaze_held = true;
+		galaxyxr_eye_tracking_retain(&hmd->eye_tracking);
+		sensor_thread_notify(hmd);
+	}
+#endif
+
+	return XRT_SUCCESS;
+}
+
+static xrt_result_t
+galaxyxr_hmd_end_foveation(struct xrt_device *xdev)
+{
+	struct galaxyxr_hmd *hmd = galaxyxr_hmd(xdev);
+
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+	if (hmd->fovea_gaze_held) {
+		hmd->fovea_gaze_held = false;
+		galaxyxr_eye_tracking_release(&hmd->eye_tracking);
+		sensor_thread_notify(hmd);
+	}
+#else
+	(void)hmd;
+#endif
+
+	return XRT_SUCCESS;
+}
+
+static xrt_result_t
+galaxyxr_hmd_get_foveation_map(struct xrt_device *xdev, struct xrt_foveation_map *map)
+{
+	struct galaxyxr_hmd *hmd = galaxyxr_hmd(xdev);
+
+	struct xrt_vec3 gaze;
+	const struct xrt_vec3 *gaze_ptr = NULL;
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+	struct xrt_space_relation relation = XRT_SPACE_RELATION_ZERO;
+	galaxyxr_eye_tracking_get_relation(&hmd->eye_tracking, 0, &relation);
+	if ((relation.relation_flags & XRT_SPACE_RELATION_ORIENTATION_VALID_BIT) != 0) {
+		const struct xrt_vec3 forward = {0.0f, 0.0f, -1.0f};
+		math_quat_rotate_vec3(&relation.pose.orientation, &forward, &gaze);
+		gaze_ptr = &gaze;
+	}
+#endif
+
+	return galaxyxr_foveation_fill_map(&hmd->foveation, gaze_ptr, map);
+}
 
 static xrt_result_t
 galaxyxr_compute_distortion(struct xrt_device *xdev, uint32_t view, float u, float v, struct xrt_uv_triplet *out_result)
@@ -850,6 +936,9 @@ galaxyxr_hmd_create(void)
 	hmd->base.get_tracked_pose = galaxyxr_hmd_get_tracked_pose;
 	hmd->base.get_view_poses = galaxyxr_hmd_get_view_poses;
 	hmd->base.get_compositor_info = galaxyxr_hmd_get_compositor_info;
+	hmd->base.begin_foveation = u_device_ni_begin_foveation;
+	hmd->base.end_foveation = u_device_ni_end_foveation;
+	hmd->base.get_foveation_map = u_device_ni_get_foveation_map;
 	hmd->base.destroy = galaxyxr_hmd_destroy;
 #ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
 	hmd->base.begin_feature = galaxyxr_hmd_begin_feature;
@@ -958,6 +1047,27 @@ galaxyxr_hmd_create(void)
 		u_distortion_mesh_set_none(&hmd->base);
 	}
 
+	// Foveation needs the lens mapping, so it rides on the profile.
+	if (hmd->profile_active && debug_get_bool_option_galaxyxr_foveation()) {
+		const float radius_deg = (float)debug_get_float_option_galaxyxr_fovea_radius();
+		bool use_gaze = false;
+		if (galaxyxr_foveation_init(&hmd->foveation, hmd->profile, GXR_EYE_W, GXR_EYE_H, radius_deg,
+		                            hmd->have_view_pose ? hmd->view_pose : NULL, &hmd->log_level)) {
+			hmd->foveation_active = true;
+			hmd->base.begin_foveation = galaxyxr_hmd_begin_foveation;
+			hmd->base.end_foveation = galaxyxr_hmd_end_foveation;
+			hmd->base.get_foveation_map = galaxyxr_hmd_get_foveation_map;
+			hmd->base.supported.foveation = true;
+#ifdef XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+			use_gaze = hmd->base.supported.eye_gaze && debug_get_bool_option_galaxyxr_foveation_gaze();
+			hmd->foveation_gaze = use_gaze;
+#endif
+			GXR_INFO(hmd, "Foveation: %.1f deg fovea radius, %s", radius_deg,
+			         use_gaze ? "following the gaze, eye cameras on demand"
+			                  : "fixed at the panel centre");
+		}
+	}
+
 	// Per-unit factory files only: the /product devkit fallback carries
 	// another unit's imus{} entries and must not be applied here.
 	const char *cal_paths[] = {
@@ -995,6 +1105,11 @@ galaxyxr_hmd_create(void)
 	u_var_add_ro_vec3_f32(hmd, &hmd->gyro, "gyro");
 	u_var_add_ro_vec3_f32(hmd, &hmd->gyro_bias, "gyro_bias");
 	u_var_add_pose(hmd, &hmd->relation.pose, "pose");
+	if (hmd->foveation_active) {
+		u_var_add_ro_f32(hmd, &hmd->foveation.draw_last_ms, "foveation_draw_ms");
+		u_var_add_ro_f32(hmd, &hmd->foveation.draw_avg_ms, "foveation_draw_avg_ms");
+		u_var_add_ro_f32(hmd, &hmd->foveation.draw_max_ms, "foveation_draw_max_ms");
+	}
 
 #ifdef XRT_FEATURE_TITAN_PASSTHROUGH
 	hmd->base.passthrough =

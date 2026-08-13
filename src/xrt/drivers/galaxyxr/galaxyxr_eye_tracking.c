@@ -25,7 +25,7 @@
 static void
 process_sample(struct galaxyxr_eye_tracking *et, const struct galaxyxr_eye_sample *sample)
 {
-	if (!galaxyxr_eye_tracking_is_enabled(et) || sample->timestamp_ns == 0 || sample->timestamp_ns > INT64_MAX ||
+	if (!galaxyxr_eye_tracking_is_needed(et) || sample->timestamp_ns == 0 || sample->timestamp_ns > INT64_MAX ||
 	    !isfinite(sample->display_gaze[0]) || !isfinite(sample->display_gaze[1])) {
 		return;
 	}
@@ -51,7 +51,7 @@ process_sample(struct galaxyxr_eye_tracking *et, const struct galaxyxr_eye_sampl
 	math_quat_from_vec_a_to_vec_b(&forward, &gaze_direction, &relation.pose.orientation);
 
 	(void)m_relation_history_push(et->relation_history, &relation, (int64_t)sample->timestamp_ns);
-	if (!galaxyxr_eye_tracking_is_enabled(et)) {
+	if (!galaxyxr_eye_tracking_is_needed(et)) {
 		m_relation_history_clear(et->relation_history);
 	}
 }
@@ -75,7 +75,7 @@ galaxyxr_eye_tracking_init(struct galaxyxr_eye_tracking *et, struct xrt_device *
 		return false;
 	}
 
-	xrt_atomic_s32_store(&et->enabled, 0);
+	xrt_atomic_s32_store(&et->use_count, 0);
 	U_LOG_XDEV_IFL_I(xdev, *log_level, "Eye tracking available on demand: chained HVX at %u FPS",
 	                 GXR_EYE_CAMERA_FPS);
 	return true;
@@ -84,23 +84,34 @@ galaxyxr_eye_tracking_init(struct galaxyxr_eye_tracking *et, struct xrt_device *
 void
 galaxyxr_eye_tracking_destroy(struct galaxyxr_eye_tracking *et)
 {
-	galaxyxr_eye_tracking_set_enabled(et, false);
+	xrt_atomic_s32_store(&et->use_count, 0);
 	m_relation_history_destroy(&et->relation_history);
 }
 
 void
-galaxyxr_eye_tracking_set_enabled(struct galaxyxr_eye_tracking *et, bool enabled)
+galaxyxr_eye_tracking_retain(struct galaxyxr_eye_tracking *et)
 {
-	xrt_atomic_s32_store(&et->enabled, enabled ? 1 : 0);
-	if (!enabled && et->relation_history != NULL) {
+	xrt_atomic_s32_inc_return(&et->use_count);
+}
+
+void
+galaxyxr_eye_tracking_release(struct galaxyxr_eye_tracking *et)
+{
+	int32_t count = xrt_atomic_s32_dec_return(&et->use_count);
+	if (count < 0) {
+		U_LOG_E("Unbalanced eye tracking release");
+		xrt_atomic_s32_store(&et->use_count, 0);
+		count = 0;
+	}
+	if (count == 0 && et->relation_history != NULL) {
 		m_relation_history_clear(et->relation_history);
 	}
 }
 
 bool
-galaxyxr_eye_tracking_is_enabled(struct galaxyxr_eye_tracking *et)
+galaxyxr_eye_tracking_is_needed(struct galaxyxr_eye_tracking *et)
 {
-	return xrt_atomic_s32_load(&et->enabled) != 0;
+	return xrt_atomic_s32_load(&et->use_count) > 0;
 }
 
 int
@@ -166,7 +177,7 @@ galaxyxr_eye_tracking_get_relation(struct galaxyxr_eye_tracking *et,
                                    struct xrt_space_relation *out_relation)
 {
 	*out_relation = (struct xrt_space_relation)XRT_SPACE_RELATION_ZERO;
-	if (!galaxyxr_eye_tracking_is_enabled(et)) {
+	if (!galaxyxr_eye_tracking_is_needed(et)) {
 		return;
 	}
 
@@ -186,7 +197,7 @@ galaxyxr_eye_tracking_get_relation(struct galaxyxr_eye_tracking *et,
 	struct xrt_space_relation relation = XRT_SPACE_RELATION_ZERO;
 	if (m_relation_history_get(et->relation_history, query_timestamp_ns, &relation) !=
 	        M_RELATION_HISTORY_RESULT_INVALID &&
-	    galaxyxr_eye_tracking_is_enabled(et)) {
+	    galaxyxr_eye_tracking_is_needed(et)) {
 		*out_relation = relation;
 	}
 }
