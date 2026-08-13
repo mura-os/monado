@@ -693,6 +693,13 @@ render_resources_init(struct render_resources *r,
 
 
 	/*
+	 * Foveation capability.
+	 */
+
+	render_foveation_setup(r);
+
+
+	/*
 	 * Common samplers.
 	 */
 

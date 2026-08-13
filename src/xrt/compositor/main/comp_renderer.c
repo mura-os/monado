@@ -161,6 +161,28 @@ struct comp_renderer
 	 */
 	VkFence *fences;
 
+	struct
+	{
+		/*!
+		 * The one foveation map of the target render pass, shared by
+		 * all its targets; see @ref render_foveation_map. Zeroed when
+		 * the pass is not foveated.
+		 */
+		struct render_foveation_map map;
+
+		//! CPU time of the last update: device map draw + staging commit.
+		float update_last_ms;
+
+		//! Exponential moving average of update_last_ms.
+		float update_avg_ms;
+
+		//! The xrt_device_get_foveation_map portion of the last update.
+		float driver_last_ms;
+
+		//! An xrt_device begin_foveation span is open.
+		bool begun;
+	} foveation;
+
 	/*!
 	 * The number of renderings/fences we've created: set from comp_target when we use that data.
 	 */
@@ -501,8 +523,121 @@ calc_pose_data(struct comp_renderer *r,
 	}
 }
 
-//! @pre comp_target_has_images(r->c->target)
+//! Should the target render pass apply the device's foveation map?
+static bool
+renderer_use_foveation(struct comp_renderer *r)
+{
+	struct comp_compositor *c = r->c;
+
+	return c->nr.foveation.mechanism != RENDER_FOVEATION_MECHANISM_NONE && c->xdev->supported.foveation;
+}
+
 static void
+renderer_close_renderings_and_fences(struct comp_renderer *r);
+
+static void
+renderer_record_foveation_timing(struct comp_renderer *r, uint64_t start_ns, uint64_t driver_done_ns, uint64_t end_ns)
+{
+	// For the debug GUI, see comp_renderer_add_debug_vars.
+	r->foveation.driver_last_ms = (float)time_ns_to_ms_f(driver_done_ns - start_ns);
+	r->foveation.update_last_ms = (float)time_ns_to_ms_f(end_ns - start_ns);
+	if (r->foveation.update_avg_ms == 0.0f) {
+		r->foveation.update_avg_ms = r->foveation.update_last_ms;
+	} else {
+		r->foveation.update_avg_ms += 0.05f * (r->foveation.update_last_ms - r->foveation.update_avg_ms);
+	}
+
+#if 0
+	// Periodic timing log for measurements.
+	static uint32_t log_counter = 0;
+	if (++log_counter % 256 == 0) {
+		COMP_INFO(r->c, "foveation timing: update %.3f ms (avg %.3f), device draw %.3f ms, commit %.3f ms",
+		          r->foveation.update_last_ms, r->foveation.update_avg_ms, r->foveation.driver_last_ms,
+		          r->foveation.update_last_ms - r->foveation.driver_last_ms);
+	}
+#endif
+}
+
+/*!
+ * Keep the device's begin/end_foveation span in sync with whether dispatch
+ * will feed it map fills: the map exists and rendering is not paused.
+ * Geometry is fixed for a whole span by construction — any target
+ * change recreates the map, closing the span and opening a new one.
+ */
+static void
+renderer_update_foveation_signal(struct comp_renderer *r)
+{
+	struct comp_compositor *c = r->c;
+
+	const bool want = r->foveation.map.images != NULL && c->display.rendering;
+	if (want == r->foveation.begun) {
+		return;
+	}
+	r->foveation.begun = want;
+
+	xrt_result_t xret;
+	if (want) {
+		struct render_viewport_data viewports[XRT_MAX_VIEWS];
+		calc_viewport_data(r, viewports, c->nr.view_count);
+
+		struct xrt_foveation_begin_info info;
+		render_foveation_map_begin_info(&c->nr, &r->foveation.map, viewports, c->nr.view_count, &info);
+
+		xret = xrt_device_begin_foveation(c->xdev, &info);
+	} else {
+		xret = xrt_device_end_foveation(c->xdev);
+	}
+	if (xret != XRT_SUCCESS) {
+		COMP_WARN(c, "xrt_device_%s_foveation: %u", want ? "begin" : "end", xret);
+	}
+}
+
+/*!
+ * Have the device draw this frame's foveation map into the next staging ring
+ * slot and stage it for upload. A device failure only logs: the previous map
+ * content stays in use, foveation quietly freezes rather than killing the
+ * frame.
+ */
+static void
+renderer_update_foveation_map(struct comp_renderer *r)
+{
+	COMP_TRACE_MARKER();
+
+	struct comp_compositor *c = r->c;
+	struct render_resources *nr = &c->nr;
+	struct render_foveation_map *map = &r->foveation.map;
+
+	if (map->images == NULL) {
+		return;
+	}
+
+	uint64_t start_ns = os_monotonic_get_ns();
+
+	struct render_viewport_data viewports[XRT_MAX_VIEWS];
+	calc_viewport_data(r, viewports, nr->view_count);
+
+	struct xrt_foveation_map xfm;
+	render_foveation_map_update_begin(nr, map, viewports, nr->view_count, &xfm);
+
+	xrt_result_t xret = xrt_device_get_foveation_map(c->xdev, &xfm);
+	if (xret != XRT_SUCCESS) {
+		COMP_ERROR(c, "xrt_device_get_foveation_map: %u", xret);
+		return;
+	}
+
+	uint64_t driver_done_ns = os_monotonic_get_ns();
+
+	VkResult ret = render_foveation_map_update_commit(nr, map);
+	if (ret != VK_SUCCESS) {
+		COMP_ERROR(c, "render_foveation_map_update_commit: %s", vk_result_string(ret));
+		return;
+	}
+
+	renderer_record_foveation_timing(r, start_ns, driver_done_ns, os_monotonic_get_ns());
+}
+
+//! @pre comp_target_has_images(r->c->target)
+static XRT_CHECK_RESULT bool
 renderer_build_rendering_target_resources(struct comp_renderer *r,
                                           struct render_gfx_target_resources *rtr,
                                           uint32_t index)
@@ -515,26 +650,35 @@ renderer_build_rendering_target_resources(struct comp_renderer *r,
 	VkImageView image_view = r->c->target->images[index].view;
 	VkExtent2D extent = {r->c->target->width, r->c->target->height};
 
-	render_gfx_target_resources_init( //
-	    rtr,                          //
-	    &c->nr,                       //
-	    &r->target_render_pass,       //
-	    image,                        //
-	    image_view,                   //
-	    extent);                      //
+	struct render_foveation_map *foveation_map =
+	    r->target_render_pass.foveation_mechanism != RENDER_FOVEATION_MECHANISM_NONE ? &r->foveation.map : NULL;
+
+	if (!render_gfx_target_resources_init( //
+	        rtr,                          //
+	        &c->nr,                       //
+	        &r->target_render_pass,       //
+	        foveation_map,                //
+	        image,                        //
+	        image_view,                   //
+	        extent)) {                    //
+		COMP_ERROR(c, "render_gfx_target_resources_init: false");
+		return false;
+	}
+
+	return true;
 }
 
 /*!
  * @pre comp_target_has_images(r->c->target)
  * Update r->buffer_count before calling.
  */
-static void
+static XRT_CHECK_RESULT bool
 renderer_create_renderings_and_fences(struct comp_renderer *r)
 {
 	assert(r->fences == NULL);
 	if (r->buffer_count == 0) {
 		COMP_ERROR(r->c, "Requested 0 command buffers.");
-		return;
+		return false;
 	}
 
 	COMP_DEBUG(r->c, "Allocating %d Command Buffers.", r->buffer_count);
@@ -544,20 +688,46 @@ renderer_create_renderings_and_fences(struct comp_renderer *r)
 	bool use_compute = r->settings->use_compute;
 	if (!use_compute) {
 		r->rtr_array = U_TYPED_ARRAY_CALLOC(struct render_gfx_target_resources, r->buffer_count);
+		if (r->rtr_array == NULL) {
+			COMP_ERROR(r->c, "Failed to allocate target render resources");
+			return false;
+		}
 
-		render_gfx_render_pass_init(       //
-		    &r->target_render_pass,        // rgrp
-		    &r->c->nr,                     // struct render_resources
-		    r->c->target->format,          //
-		    r->c->target->present_load_op, // load_op
-		    r->c->target->final_layout);   // final_layout
+		if (!render_gfx_render_pass_init(      //
+		        &r->target_render_pass,        // rgrp
+		        &r->c->nr,                     // struct render_resources
+		        r->c->target->format,          //
+		        r->c->target->present_load_op, // load_op
+		        r->c->target->final_layout,    // final_layout
+		        renderer_use_foveation(r))) {  // foveated
+			COMP_ERROR(r->c, "render_gfx_render_pass_init: false");
+			goto fail;
+		}
+
+		// The one foveation map shared by all the pass's targets; the
+		// device fills it every frame from dispatch.
+		if (r->target_render_pass.foveation_mechanism != RENDER_FOVEATION_MECHANISM_NONE) {
+			VkExtent2D extent = {r->c->target->width, r->c->target->height};
+			VkResult ret = render_foveation_map_init(&r->c->nr, extent, r->buffer_count, &r->foveation.map);
+			if (ret != VK_SUCCESS) {
+				COMP_ERROR(r->c, "render_foveation_map_init: %s", vk_result_string(ret));
+				goto fail;
+			}
+		}
 
 		for (uint32_t i = 0; i < r->buffer_count; ++i) {
-			renderer_build_rendering_target_resources(r, &r->rtr_array[i], i);
+			if (!renderer_build_rendering_target_resources(r, &r->rtr_array[i], i)) {
+				COMP_ERROR(r->c, "renderer_build_rendering_target_resources: false");
+				goto fail;
+			}
 		}
 	}
 
 	r->fences = U_TYPED_ARRAY_CALLOC(VkFence, r->buffer_count);
+	if (r->fences == NULL) {
+		COMP_ERROR(r->c, "Failed to allocate fences");
+		goto fail;
+	}
 
 	for (uint32_t i = 0; i < r->buffer_count; i++) {
 		VkFenceCreateInfo fence_info = {
@@ -572,12 +742,21 @@ renderer_create_renderings_and_fences(struct comp_renderer *r)
 		    &r->fences[i]);               //
 		if (ret != VK_SUCCESS) {
 			COMP_ERROR(r->c, "vkCreateFence: %s", vk_result_string(ret));
+			goto fail;
 		}
 
 		char buf[] = "Comp Renderer X_XXXX_XXXX";
 		snprintf(buf, ARRAY_SIZE(buf), "Comp Renderer %u", i);
 		VK_NAME_FENCE(vk, r->fences[i], buf);
 	}
+
+	renderer_update_foveation_signal(r);
+
+	return true;
+
+fail:
+	renderer_close_renderings_and_fences(r);
+	return false;
 }
 
 static void
@@ -589,6 +768,10 @@ renderer_close_renderings_and_fences(struct comp_renderer *r)
 		for (uint32_t i = 0; i < r->buffer_count; i++) {
 			render_gfx_target_resources_fini(&r->rtr_array[i]);
 		}
+
+		// After the targets, they reference the shared foveation map.
+		render_foveation_map_fini(&r->c->nr, &r->foveation.map);
+		renderer_update_foveation_signal(r);
 
 		// Close the render pass used for rendering to the target.
 		render_gfx_render_pass_fini(&r->target_render_pass);
@@ -703,7 +886,9 @@ renderer_ensure_images_and_renderings(struct comp_renderer *r, bool force_recrea
 
 	r->buffer_count = r->c->target->image_count;
 
-	renderer_create_renderings_and_fences(r);
+	if (!renderer_create_renderings_and_fences(r)) {
+		return false;
+	}
 
 	assert(r->buffer_count != 0);
 
@@ -1011,6 +1196,9 @@ renderer_fini(struct comp_renderer *r)
 	// Command buffers
 	renderer_close_renderings_and_fences(r);
 
+	// Foveation debug vars.
+	u_var_remove_root(r);
+
 	// Do before layer render just in case it holds any references.
 	comp_mirror_fini(&r->mirror_to_debug_gui, vk);
 
@@ -1046,6 +1234,11 @@ dispatch_graphics(struct comp_renderer *r,
 
 	// Resources for the distortion render target.
 	struct render_gfx_target_resources *rtr = &r->rtr_array[r->acquired_buffer];
+
+	// Foveation: the device draws this frame's map.
+	if (renderer_use_foveation(r)) {
+		renderer_update_foveation_map(r);
+	}
 
 	// Vertex rotation information.
 	struct xrt_matrix_2x2 vertex_rots[XRT_MAX_VIEWS];
@@ -1467,6 +1660,12 @@ comp_renderer_create(struct comp_compositor *c, VkExtent2D scratch_extent)
 }
 
 void
+comp_renderer_update_foveation_signal(struct comp_renderer *r)
+{
+	renderer_update_foveation_signal(r);
+}
+
+void
 comp_renderer_destroy(struct comp_renderer **ptr_r)
 {
 	if (ptr_r == NULL) {
@@ -1490,4 +1689,11 @@ comp_renderer_add_debug_vars(struct comp_renderer *self)
 	struct comp_renderer *r = self;
 
 	comp_mirror_add_debug_vars(&r->mirror_to_debug_gui, r->c);
+
+	if (renderer_use_foveation(r)) {
+		u_var_add_root(r, "Foveation", true);
+		u_var_add_ro_f32(r, &r->foveation.update_last_ms, "Map update (ms)");
+		u_var_add_ro_f32(r, &r->foveation.update_avg_ms, "Map update avg (ms)");
+		u_var_add_ro_f32(r, &r->foveation.driver_last_ms, "Driver fill part (ms)");
+	}
 }

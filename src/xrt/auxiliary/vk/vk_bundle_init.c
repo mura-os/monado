@@ -717,6 +717,13 @@ filter_device_features(struct vk_bundle *vk,
 	};
 #endif
 
+#ifdef VK_KHR_fragment_shading_rate
+	VkPhysicalDeviceFragmentShadingRateFeaturesKHR fragment_shading_rate_info = {
+	    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR,
+	    .pNext = NULL,
+	};
+#endif
+
 #ifdef VK_KHR_video_maintenance1
 	VkPhysicalDeviceVideoMaintenance1FeaturesKHR video_maintenance_1_info = {
 	    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_MAINTENANCE_1_FEATURES_KHR,
@@ -798,6 +805,13 @@ filter_device_features(struct vk_bundle *vk,
 	}
 #endif
 
+#ifdef VK_KHR_fragment_shading_rate
+	if (vk->has_KHR_fragment_shading_rate) {
+		vk_append_to_pnext_chain((VkBaseInStructure *)&physical_device_features,
+		                         (VkBaseInStructure *)&fragment_shading_rate_info);
+	}
+#endif
+
 #ifdef VK_KHR_video_maintenance1
 	if (vk->has_KHR_video_maintenance1) {
 		vk_append_to_pnext_chain((VkBaseInStructure *)&physical_device_features,
@@ -863,6 +877,17 @@ filter_device_features(struct vk_bundle *vk,
 #ifdef VK_KHR_dynamic_rendering
 	CHECK(dynamic_rendering, dynamic_rendering_info.dynamicRendering);
 #endif
+
+#ifdef VK_KHR_fragment_shading_rate
+	CHECK(pipeline_fragment_shading_rate, fragment_shading_rate_info.pipelineFragmentShadingRate);
+	CHECK(attachment_fragment_shading_rate, fragment_shading_rate_info.attachmentFragmentShadingRate);
+#endif
+
+	// The FSR features are only usable on the dynamic rendering path.
+	if (!device_features->dynamic_rendering) {
+		device_features->pipeline_fragment_shading_rate = false;
+		device_features->attachment_fragment_shading_rate = false;
+	}
 
 #ifdef VK_KHR_video_maintenance1
 	CHECK(video_maintenance_1, video_maintenance_1_info.videoMaintenance1);
@@ -1012,6 +1037,8 @@ vk_create_device(struct vk_bundle *vk,
 	vk->features.synchronization_2 = device_features.synchronization_2;
 	vk->features.dynamic_rendering = device_features.dynamic_rendering;
 	vk->features.sampler_ycbcr_conversion = device_features.sampler_ycbcr_conversion;
+	vk->features.pipeline_fragment_shading_rate = device_features.pipeline_fragment_shading_rate;
+	vk->features.attachment_fragment_shading_rate = device_features.attachment_fragment_shading_rate;
 	vk->features.present_id = device_features.present_id;
 	vk->features.present_id2 = device_features.present_id2;
 	vk->features.present_wait = device_features.present_wait;
@@ -1184,6 +1211,15 @@ vk_create_device(struct vk_bundle *vk,
 	};
 #endif
 
+#ifdef VK_KHR_fragment_shading_rate
+	VkPhysicalDeviceFragmentShadingRateFeaturesKHR fragment_shading_rate_info = {
+	    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR,
+	    .pNext = NULL,
+	    .pipelineFragmentShadingRate = device_features.pipeline_fragment_shading_rate,
+	    .attachmentFragmentShadingRate = device_features.attachment_fragment_shading_rate,
+	};
+#endif
+
 #ifdef VK_KHR_video_maintenance1
 	VkPhysicalDeviceVideoMaintenance1FeaturesKHR video_maintenance_1_info = {
 	    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_MAINTENANCE_1_FEATURES_KHR,
@@ -1275,6 +1311,13 @@ vk_create_device(struct vk_bundle *vk,
 	if (vk->has_KHR_dynamic_rendering) {
 		vk_append_to_pnext_chain((VkBaseInStructure *)&device_create_info,
 		                         (VkBaseInStructure *)&dynamic_rendering_info);
+	}
+#endif
+
+#ifdef VK_KHR_fragment_shading_rate
+	if (vk->has_KHR_fragment_shading_rate) {
+		vk_append_to_pnext_chain((VkBaseInStructure *)&device_create_info,
+		                         (VkBaseInStructure *)&fragment_shading_rate_info);
 	}
 #endif
 

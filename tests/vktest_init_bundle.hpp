@@ -132,20 +132,22 @@ vktest_init_bundle(struct vk_bundle *vk)
 
 	U_ZERO(vk);
 	comp_vulkan_arguments args{
-	    VK_MAKE_VERSION(1, 0, 0),
-	    vkGetInstanceProcAddr,
-	    required_instance_ext_list.get(),
-	    optional_instance_ext_list.get(),
-	    required_device_extension_list.get(),
-	    optional_device_extension_list.get(),
-	    U_LOGGING_TRACE,
-	    false /* only_compute_queue */,
-	    true /*timeline_semaphore*/,
-	    -1,
-	    false,
-	    xrt_uuid_t{},
-	    -1,
-	    COMP_TARGET_INFO_INIT /*target_info*/,
+	    .required_instance_version = VK_MAKE_VERSION(1, 0, 0),
+	    .get_instance_proc_address = vkGetInstanceProcAddr,
+	    .required_instance_extensions = required_instance_ext_list.get(),
+	    .optional_instance_extensions = optional_instance_ext_list.get(),
+	    .required_device_extensions = required_device_extension_list.get(),
+	    .optional_device_extensions = optional_device_extension_list.get(),
+	    .log_level = U_LOGGING_TRACE,
+	    .only_compute_queue = false,
+	    .timeline_semaphore = true,
+	    .enable_foveation_features = false,
+	    .foveation_preference = COMP_VULKAN_FOVEATION_OFF,
+	    .selected_gpu_index = -1,
+	    .lookup_with_uuid = false,
+	    .selected_gpu_uuid = {},
+	    .client_gpu_index = -1,
+	    .target_info = COMP_TARGET_INFO_INIT,
 	};
 	comp_vulkan_results results{};
 	bool success = comp_vulkan_init_bundle(vk, &args, &results);

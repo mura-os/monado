@@ -352,6 +352,11 @@ create_device(struct vk_bundle *vk, const struct comp_vulkan_arguments *vk_args)
 	    .video_maintenance_1 = true,
 	};
 
+	if (vk_args->enable_foveation_features && vk_args->foveation_preference != COMP_VULKAN_FOVEATION_OFF) {
+		// The current FSR path uses only a fragment shading rate attachment.
+		device_features.attachment_fragment_shading_rate = true;
+	}
+
 	ret = vk_init_mutex(vk);
 	if (ret != VK_SUCCESS) {
 		VK_ERROR_RET(vk, "vk_init_mutex", "Failed to init mutex.", ret);
@@ -401,6 +406,7 @@ create_device(struct vk_bundle *vk, const struct comp_vulkan_arguments *vk_args)
 
 	// Print features enabled.
 	vk_print_features_info(vk, U_LOGGING_INFO);
+	vk_print_foveation_info(vk, U_LOGGING_INFO);
 
 	// Now that we are done debug some used external handles.
 	vk_print_external_handles_info(vk, U_LOGGING_INFO);

@@ -205,6 +205,12 @@ struct vk_bundle
 		//! Was samplerYcbcrConversion requested, available, and enabled?
 		bool sampler_ycbcr_conversion;
 
+		//! Was fragment_shading_rate's pipelineFragmentShadingRate requested, available, and enabled?
+		bool pipeline_fragment_shading_rate;
+
+		//! Was fragment_shading_rate's attachmentFragmentShadingRate requested, available, and enabled?
+		bool attachment_fragment_shading_rate;
+
 		//! Was KHR_present_id requested, available, and enabled?
 		bool present_id;
 
@@ -785,6 +791,8 @@ struct vk_device_features
 	bool synchronization_2;
 	bool dynamic_rendering;
 	bool sampler_ycbcr_conversion;
+	bool pipeline_fragment_shading_rate;
+	bool attachment_fragment_shading_rate;
 	bool ext_fmt_resolve;
 	bool storage_buffer_8bit_access;
 	bool present_id;

@@ -146,6 +146,81 @@ struct xrt_device_compositor_mode
 };
 
 /*!
+ * @brief Geometry of the foveation maps a device will be asked to fill
+ * between @ref xrt_device::begin_foveation and
+ * @ref xrt_device::end_foveation: the mechanism and every per-view grid,
+ * guaranteed by the compositor to stay exactly this until the span ends. A
+ * device can build whatever per-texel tables it needs once, here.
+ */
+struct xrt_foveation_begin_info
+{
+	//! Mechanism the compositor selected; decides the texel format.
+	enum xrt_foveation_mechanism mechanism;
+
+	//! Display pixels covered by one map texel.
+	struct xrt_size texel_extent;
+
+	uint32_t view_count;
+	struct
+	{
+		//! Grid size in texels of this view's map fills.
+		uint32_t width, height;
+	} views[XRT_MAX_VIEWS];
+};
+
+/*!
+ * @brief A hardware foveation map for @ref xrt_device::get_foveation_map to
+ * fill.
+ *
+ * The compositor sets every field and the device writes the texels: per view
+ * a width x height row-major grid in the texel format of @ref mechanism,
+ * texel (x, y) covering the @ref texel_extent display pixels whose centre is
+ * at u = (x + 0.5) / width, v = (y + 0.5) / height of the view — the same
+ * normalized view space @ref xrt_device::compute_distortion's inputs use.
+ *
+ * The compositor multi-buffers the underlying memory, so texels written on
+ * one call are not necessarily still there on the next. @ref buffer_id names
+ * the buffer this call writes; when @ref preserved is also set, the buffer
+ * still holds exactly what the device wrote the last time it filled that
+ * buffer_id, so a device tracking its own writes may redraw only what
+ * changed instead of every texel.
+ */
+struct xrt_foveation_map
+{
+	//! Mechanism the compositor selected; decides the texel format.
+	enum xrt_foveation_mechanism mechanism;
+
+	//! Display pixels covered by one map texel.
+	struct xrt_size texel_extent;
+
+	/*!
+	 * VK_FSR only: the attachment texel value for a fragment size of
+	 * (2^i)x(2^j) pixels is fsr_rates[i][j], pre-clamped to the sizes the
+	 * GPU supports. FSR texels must take their values from this table.
+	 */
+	uint8_t fsr_rates[3][3];
+
+	//! Which underlying buffer the view grids point into; small and dense.
+	uint32_t buffer_id;
+
+	//! This buffer still holds the device's last fill of this buffer_id.
+	bool preserved;
+
+	uint32_t view_count;
+	struct
+	{
+		//! Texels to write; possibly write-combined, never read back.
+		uint8_t *data;
+
+		//! Grid size in texels.
+		uint32_t width, height;
+
+		//! Bytes between the starts of consecutive grid rows.
+		uint32_t stride;
+	} views[XRT_MAX_VIEWS];
+};
+
+/*!
  * All of the device components that deals with interfacing to a users head.
  *
  * HMD is probably a bad name for the future but for now will have to do.
@@ -348,6 +423,12 @@ struct xrt_device_supported
 	bool brightness_control;
 	bool compositor_info;
 	bool notify_chirality;
+
+	/*!
+	 * Does the device fill per-view foveation maps via
+	 * @ref xrt_device::get_foveation_map?
+	 */
+	bool foveation;
 
 	bool planes;
 	enum xrt_plane_detection_capability_flags_ext plane_capability_flags;
@@ -793,6 +874,58 @@ struct xrt_device
 	                                    struct xrt_device_compositor_info *out_info);
 
 	/*!
+	 * @brief Foveated compositing is starting: until the matching
+	 * @ref end_foveation the compositor may call @ref get_foveation_map,
+	 * and every map will have exactly the geometry in @p info.
+	 *
+	 * Never null, use @ref u_device_ni_begin_foveation when not
+	 * implemented; only called when @ref xrt_device_supported::foveation
+	 * is set, and always strictly alternating with @ref end_foveation.
+	 * The span follows actual compositing: it ends when rendering pauses
+	 * (user absent, session ended) or the target changes, and a new one
+	 * begins — possibly with new geometry — when it resumes. A device
+	 * needing resources for its maps, like gaze tracking or per-texel
+	 * tables, should acquire them here and drop them in end_foveation
+	 * rather than holding them while nothing composites.
+	 *
+	 * A notification: the compositor ignores failures.
+	 */
+	xrt_result_t (*begin_foveation)(struct xrt_device *xdev, const struct xrt_foveation_begin_info *info);
+
+	/*!
+	 * @brief Foveated compositing stopped; no more
+	 * @ref get_foveation_map calls until the next @ref begin_foveation.
+	 *
+	 * Never null, use @ref u_device_ni_end_foveation when not
+	 * implemented. A notification: the compositor ignores failures.
+	 */
+	xrt_result_t (*end_foveation)(struct xrt_device *xdev);
+
+	/*!
+	 * @brief Fill this frame's per-view hardware foveation map.
+	 *
+	 * Never null, use @ref u_device_ni_get_foveation_map when not
+	 * implemented; only called when @ref xrt_device_supported::foveation
+	 * is set, and only between @ref begin_foveation and
+	 * @ref end_foveation. Called by the compositor once per composited
+	 * frame: the device draws where the frame must stay sharp (full
+	 * rate/density, e.g. the user's fovea) and where shading may be
+	 * reduced, directly in the texel format of the mechanism the
+	 * compositor selected — there is no device-independent intermediate.
+	 *
+	 * The compositor fills everything in @p map but the texels: the
+	 * mechanism, the texel geometry and per view a grid to write. The
+	 * driver writes every texel of every view grid, except when
+	 * @ref xrt_foveation_map::preserved allows it to skip what it knows
+	 * it already wrote. The grids may live in write-combined staging
+	 * memory: write-only, no reading back.
+	 *
+	 * Runs on the compositor's render thread every frame, so it must be
+	 * fast — well under a millisecond.
+	 */
+	xrt_result_t (*get_foveation_map)(struct xrt_device *xdev, struct xrt_foveation_map *map);
+
+	/*!
 	 * Enable the feature for this device.
 	 *
 	 * @param[in] xdev        The device.
@@ -1081,6 +1214,42 @@ xrt_device_get_view_poses(struct xrt_device *xdev,
 	    out_head_relation,       //
 	    out_fovs,                //
 	    out_poses);              //
+}
+
+/*!
+ * Helper function for @ref xrt_device::begin_foveation.
+ *
+ * @copydoc xrt_device::begin_foveation
+ * @public @memberof xrt_device
+ */
+XRT_NONNULL_ALL static inline xrt_result_t
+xrt_device_begin_foveation(struct xrt_device *xdev, const struct xrt_foveation_begin_info *info)
+{
+	return xdev->begin_foveation(xdev, info);
+}
+
+/*!
+ * Helper function for @ref xrt_device::end_foveation.
+ *
+ * @copydoc xrt_device::end_foveation
+ * @public @memberof xrt_device
+ */
+XRT_NONNULL_ALL static inline xrt_result_t
+xrt_device_end_foveation(struct xrt_device *xdev)
+{
+	return xdev->end_foveation(xdev);
+}
+
+/*!
+ * Helper function for @ref xrt_device::get_foveation_map.
+ *
+ * @copydoc xrt_device::get_foveation_map
+ * @public @memberof xrt_device
+ */
+XRT_NONNULL_ALL static inline xrt_result_t
+xrt_device_get_foveation_map(struct xrt_device *xdev, struct xrt_foveation_map *map)
+{
+	return xdev->get_foveation_map(xdev, map);
 }
 
 /*!

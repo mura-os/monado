@@ -155,6 +155,80 @@ vk_print_features_info(struct vk_bundle *vk, enum u_logging_level log_level)
 	          vk->features.dynamic_rendering ? "true" : "false");             //
 }
 
+static void
+print_fragment_shading_rate_info(struct vk_bundle *vk, enum u_logging_level log_level)
+{
+#ifdef VK_KHR_fragment_shading_rate
+	if (!vk->has_KHR_fragment_shading_rate) {
+		U_LOG_IFL(log_level, vk->log_level, "Fragment shading rate: extension not enabled");
+		return;
+	}
+
+	VkPhysicalDeviceFragmentShadingRateFeaturesKHR features = {
+	    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR,
+	};
+	VkPhysicalDeviceFeatures2 features2 = {
+	    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+	    .pNext = &features,
+	};
+	vk->vkGetPhysicalDeviceFeatures2(vk->physical_device, &features2);
+
+	VkPhysicalDeviceFragmentShadingRatePropertiesKHR props = {
+	    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_PROPERTIES_KHR,
+	};
+	VkPhysicalDeviceProperties2 props2 = {
+	    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+	    .pNext = &props,
+	};
+	vk->vkGetPhysicalDeviceProperties2(vk->physical_device, &props2);
+
+	VkPhysicalDeviceFragmentShadingRateKHR rates[32];
+	uint32_t rate_count = 0;
+	vk->vkGetPhysicalDeviceFragmentShadingRates(vk->physical_device, &rate_count, NULL);
+	if (rate_count > 32) {
+		rate_count = 32;
+	}
+	for (uint32_t i = 0; i < rate_count; i++) {
+		rates[i] = (VkPhysicalDeviceFragmentShadingRateKHR){
+		    .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_KHR,
+		};
+	}
+	vk->vkGetPhysicalDeviceFragmentShadingRates(vk->physical_device, &rate_count, rates);
+
+	struct u_pp_sink_stack_only sink;
+	u_pp_delegate_t dg = u_pp_sink_stack_only_init(&sink);
+
+	P("Fragment shading rate:");
+	PNT("pipelineFragmentShadingRate: %s", features.pipelineFragmentShadingRate ? "true" : "false");
+	PNT("primitiveFragmentShadingRate: %s", features.primitiveFragmentShadingRate ? "true" : "false");
+	PNT("attachmentFragmentShadingRate: %s", features.attachmentFragmentShadingRate ? "true" : "false");
+	PNT("maxFragmentSize: %ux%u", props.maxFragmentSize.width, props.maxFragmentSize.height);
+	PNT("attachmentTexelSize: %ux%u..%ux%u",                     //
+	    props.minFragmentShadingRateAttachmentTexelSize.width,   //
+	    props.minFragmentShadingRateAttachmentTexelSize.height,  //
+	    props.maxFragmentShadingRateAttachmentTexelSize.width,   //
+	    props.maxFragmentShadingRateAttachmentTexelSize.height); //
+	PNT("layeredShadingRateAttachments: %s", props.layeredShadingRateAttachments ? "true" : "false");
+	PNT("supported rates (%u):", rate_count);
+	for (uint32_t i = 0; i < rate_count; i++) {
+		PNTT("%ux%u (sampleCounts 0x%x)",      //
+		     rates[i].fragmentSize.width,      //
+		     rates[i].fragmentSize.height,     //
+		     (uint32_t)rates[i].sampleCounts); //
+	}
+
+	U_LOG_IFL(log_level, vk->log_level, "%s", sink.buffer);
+#else
+	U_LOG_IFL(log_level, vk->log_level, "Fragment shading rate: not compiled in");
+#endif
+}
+
+void
+vk_print_foveation_info(struct vk_bundle *vk, enum u_logging_level log_level)
+{
+	print_fragment_shading_rate_info(vk, log_level);
+}
+
 void
 vk_print_external_handles_info(struct vk_bundle *vk, enum u_logging_level log_level)
 {

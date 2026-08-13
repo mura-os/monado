@@ -230,7 +230,7 @@ comp_compositor(struct xrt_compositor *xc)
 
 /*!
  * Set whether frames are rendered and presented, and keep target output
- * power in sync on devices that opt in to power management.
+ * power and the device's foveation span in sync.
  *
  * @private @memberof comp_compositor
  */
@@ -246,6 +246,10 @@ comp_compositor_set_rendering(struct comp_compositor *c, bool rendering)
 	}
 
 	c->display.rendering = rendering;
+
+	if (c->r != NULL) {
+		comp_renderer_update_foveation_signal(c->r);
+	}
 }
 
 /*!

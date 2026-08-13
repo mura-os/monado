@@ -29,6 +29,9 @@ struct render_blit_ms_pipeline_cache;
 extern "C" {
 #endif
 
+struct xrt_foveation_begin_info;
+struct xrt_foveation_map;
+
 
 /*!
  * @defgroup aux_render Compositor render code
@@ -489,6 +492,139 @@ render_sub_alloc_ubo_alloc_and_write(struct vk_bundle *vk,
 
 /*
  *
+ * Foveation types
+ *
+ */
+
+/*!
+ * Which hardware mechanism is used to apply a foveation (variable shading
+ * rate) map to the gfx target render pass.
+ */
+enum render_foveation_mechanism
+{
+	RENDER_FOVEATION_MECHANISM_NONE = 0,
+
+	//! VK_KHR_fragment_shading_rate attachment, R8_UINT rate map.
+	RENDER_FOVEATION_MECHANISM_FSR,
+};
+
+/*!
+ * Hardware foveation capability, picked once at @ref render_resources init by
+ * @ref render_foveation_setup. Pure configuration, owns no Vulkan objects.
+ * Both mechanisms are only wired into the dynamic rendering path.
+ */
+struct render_foveation
+{
+	//! Selected mechanism, NONE when the hardware supports none (or disabled).
+	enum render_foveation_mechanism mechanism;
+
+	//! What the device is told to draw, the mechanism's xrt equivalent.
+	enum xrt_foveation_mechanism xrt_mechanism;
+
+	//! Map image format of @ref xrt_mechanism, and its bytes per texel.
+	VkFormat map_format;
+	uint32_t texel_bytes;
+
+	//! Display pixels covered by one map texel.
+	VkExtent2D texel_size;
+
+	/*!
+	 * FSR only: attachment byte for a (2^i)x(2^j) pixel fragment,
+	 * pre-clamped to the sizes the GPU actually supports; handed to the
+	 * device as @ref xrt_foveation_map::fsr_rates.
+	 */
+	uint8_t fsr_rates[3][3];
+
+	//! The coarsest supported rate, what unwritten map texels clear to.
+	VkClearColorValue background_color;
+};
+
+/*!
+ * The foveation map image: an FSR rate attachment covering the whole
+ * target, one texel per @ref render_foveation::texel_size display pixels. A
+ * single instance serves every target of the foveated render pass.
+ *
+ * The device draws the content: each frame @ref
+ * render_foveation_map_update_begin points an @ref xrt_foveation_map at the
+ * next staging ring slot for @ref xrt_device_get_foveation_map to fill, and
+ * @ref render_foveation_map_update_commit stages the slot's per-view
+ * regions as GPU copies that @ref render_gfx_begin_target records in front
+ * of the render pass. The ring is sized so a slot is never written while a
+ * still in-flight frame copies from it, and slots persist, so the device
+ * gets told when a slot still holds its previous fill and may redraw only
+ * what changed.
+ */
+struct render_foveation_map
+{
+	//! Map size in texels.
+	VkExtent2D extent;
+
+	/*!
+	 * The map image(s): one for FSR, updated in place by in-frame GPU
+	 * copies from the staging ring. Kept as a ring so a mechanism whose
+	 * map must stay untouched while frames are in flight (fragment
+	 * density maps, which implementations consume when command buffers
+	 * are recorded) can rotate through one image per in-flight frame.
+	 */
+	uint32_t image_count;
+	VkDeviceMemory *memories;
+	VkImage *images;
+	VkImageView *views;
+
+	//! The image holding the most recently committed update.
+	uint32_t image_index;
+
+	//! Persistently mapped staging ring, one slot per in-flight frame.
+	struct render_buffer *stagings;
+	uint32_t staging_count;
+
+	//! Which slots hold a completed device fill, for xrt_foveation_map::preserved.
+	uint64_t filled_bits;
+
+	//! Bumped per update, selects the staging slot.
+	uint32_t update_count;
+
+	//! Set once init cleared the images out of UNDEFINED.
+	bool initialized;
+
+	/*!
+	 * The update not yet recorded into a command buffer: per-view regions
+	 * of the staging slot to copy to the image. Kept until a command
+	 * buffer consumes it, so a frame that dies between update and record
+	 * self-heals on the next one.
+	 */
+	struct
+	{
+		//! Staging slot to upload from, or -1 when nothing is pending.
+		int32_t slot;
+
+		//! Per-view regions written from the staging slot; zero extent when none.
+		VkRect2D writes[XRT_MAX_VIEWS];
+	} pending;
+
+	//! The update handed out by update_begin, consumed by update_commit.
+	struct
+	{
+		int32_t slot;
+		VkRect2D writes[XRT_MAX_VIEWS];
+	} inflight;
+};
+
+/*!
+ * The image view carrying the most recently committed map update, what the
+ * render pass should attach; NULL handle when the map is not initialized.
+ *
+ * @public @memberof render_foveation_map
+ */
+static inline VkImageView
+render_foveation_map_current_view(const struct render_foveation_map *map)
+{
+	return map->views != NULL ? map->views[map->image_index] : VK_NULL_HANDLE;
+}
+
+
+/*
+ *
  * Resources
  *
  */
@@ -808,6 +944,9 @@ struct render_resources
 		} clear;
 	} compute;
 
+	//! Hardware foveation capability, see @ref render_foveation_setup.
+	struct render_foveation foveation;
+
 	struct
 	{
 		//! Transform to go from UV to tangle angles.
@@ -1009,6 +1148,97 @@ struct render_viewport_data
 
 typedef struct render_viewport_data render_scissor_data_t;
 
+
+/*
+ *
+ * Foveation functions
+ *
+ */
+
+/*!
+ * Query hardware support and pick the foveation mechanism, called once from
+ * @ref render_resources_init. Only fills in @ref render_resources::foveation,
+ * allocates nothing. The `XRT_COMPOSITOR_FOVEATION` env option (auto, off,
+ * fsr) can force the mechanism off.
+ *
+ * @public @memberof render_foveation
+ */
+void
+render_foveation_setup(struct render_resources *r);
+
+/*!
+ * Create the foveation map image and staging ring for one target, sized from
+ * @p target_extent; the ring gets max(2, @p frames_in_flight) slots. Must
+ * only be called when a mechanism was selected.
+ *
+ * @public @memberof render_foveation_map
+ */
+XRT_CHECK_RESULT VkResult
+render_foveation_map_init(struct render_resources *r,
+                          VkExtent2D target_extent,
+                          uint32_t frames_in_flight,
+                          struct render_foveation_map *map);
+
+/*!
+ * Frees all resources held by the map, does not free the struct itself.
+ *
+ * @public @memberof render_foveation_map
+ */
+void
+render_foveation_map_fini(struct render_resources *r, struct render_foveation_map *map);
+
+/*!
+ * Fill the geometry contract handed to @ref xrt_device_begin_foveation: the
+ * mechanism and the per-view grids that every following
+ * @ref render_foveation_map_update_begin of this map and viewports will
+ * produce.
+ *
+ * @public @memberof render_foveation_map
+ */
+void
+render_foveation_map_begin_info(struct render_resources *r,
+                                const struct render_foveation_map *map,
+                                const struct render_viewport_data *viewports,
+                                uint32_t view_count,
+                                struct xrt_foveation_begin_info *out_info);
+
+/*!
+ * Begin this frame's map update: pick the next staging ring slot and point
+ * @p out_map at it — the mechanism's texel format, geometry and per-view
+ * grids for the given viewports, ready for
+ * @ref xrt_device_get_foveation_map to fill. Commit the device's fill with
+ * @ref render_foveation_map_update_commit; on device failure simply do not
+ * commit and the previous map content stays in use.
+ *
+ * @public @memberof render_foveation_map
+ */
+void
+render_foveation_map_update_begin(struct render_resources *r,
+                                  struct render_foveation_map *map,
+                                  const struct render_viewport_data *viewports,
+                                  uint32_t view_count,
+                                  struct xrt_foveation_map *out_map);
+
+/*!
+ * Stage the update begun by @ref render_foveation_map_update_begin for
+ * upload: the GPU copy of the slot's per-view regions is recorded in front
+ * of the render pass by @ref render_gfx_begin_target.
+ *
+ * @public @memberof render_foveation_map
+ */
+XRT_CHECK_RESULT VkResult
+render_foveation_map_update_commit(struct render_resources *r, struct render_foveation_map *map);
+
+/*!
+ * Record any pending staged upload of the map into @p cmd, in front of the
+ * render pass that reads it. No-op when nothing is pending.
+ *
+ * @public @memberof render_foveation_map
+ */
+void
+render_foveation_map_record_pending(struct render_resources *r, struct render_foveation_map *map, VkCommandBuffer cmd);
+
+
 /*
  *
  * Render pass
@@ -1036,6 +1266,15 @@ struct render_gfx_render_pass
 
 	//! Final layout of the target image(s).
 	VkImageLayout final_layout;
+
+	/*!
+	 * Foveation mechanism applied to this render pass's targets, NONE for
+	 * non-foveated passes (scratch). Decides both the pipeline state (all
+	 * pipelines of a foveated pass declare the attachment) and whether
+	 * targets of this pass get a @ref render_foveation_map, so attachment
+	 * and pipelines always agree.
+	 */
+	enum render_foveation_mechanism foveation_mechanism;
 
 	//! Render pass used for rendering.
 	VkRenderPass render_pass;
@@ -1093,7 +1332,10 @@ struct render_gfx_render_pass
 };
 
 /*!
- * Creates all resources held by the render pass.
+ * Creates all resources held by the render pass. With @p foveated set (and a
+ * mechanism available, see @ref render_foveation_setup) all pipelines carry
+ * the foveation attachment state and every target of this pass gets a
+ * foveation map; only the main target pass should set it, never scratch.
  *
  * @public @memberof render_gfx_render_pass
  */
@@ -1102,7 +1344,8 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
                             struct render_resources *r,
                             VkFormat format,
                             VkAttachmentLoadOp load_op,
-                            VkImageLayout final_layout);
+                            VkImageLayout final_layout,
+                            bool foveated);
 
 /*!
  * Frees all resources held by the render pass, does not free the struct itself.
@@ -1146,10 +1389,22 @@ struct render_gfx_target_resources
 
 	//! Framebuffer for this target, only used on the render pass fallback path.
 	VkFramebuffer framebuffer;
+
+	/*!
+	 * The shared foveation map of this target's render pass, NULL when
+	 * the pass is not foveated. Owned by the caller, one map serves all
+	 * targets of the pass; see @ref render_foveation_map.
+	 */
+	struct render_foveation_map *foveation;
 };
 
 /*!
  * Init a target resource struct, caller has to keep target alive until closed.
+ *
+ * @p foveation_map must be non-NULL exactly when @p rgrp is foveated: it is
+ * the caller-owned map shared by all of the pass's targets, attached to the
+ * render pass and kept current through @ref render_foveation_map_update or
+ * the set_cap/update_window pair.
  *
  * @public @memberof render_gfx_target_resources
  */
@@ -1157,6 +1412,7 @@ bool
 render_gfx_target_resources_init(struct render_gfx_target_resources *rtr,
                                  struct render_resources *r,
                                  struct render_gfx_render_pass *rgrp,
+                                 struct render_foveation_map *foveation_map,
                                  VkImage target_image,
                                  VkImageView target,
                                  VkExtent2D extent);

@@ -100,6 +100,7 @@ DEBUG_GET_ONCE_BOOL_OPTION(disable_deferred, "XRT_COMPOSITOR_DISABLE_DEFERRED", 
 // Keep rendering this long after the user takes the HMD off, so brief
 // proximity sensor blips while adjusting the fit don't cycle the panels.
 DEBUG_GET_ONCE_NUM_OPTION(presence_off_delay_ms, "XRT_COMPOSITOR_PRESENCE_OFF_DELAY_MS", 500)
+DEBUG_GET_ONCE_OPTION(foveation_mechanism, "XRT_COMPOSITOR_FOVEATION", "auto")
 
 
 /*
@@ -126,6 +127,30 @@ static struct vk_bundle *
 get_vk(struct comp_compositor *c)
 {
 	return &c->base.vk;
+}
+
+static enum comp_vulkan_foveation_preference
+compositor_get_foveation_preference(struct comp_compositor *c)
+{
+	const char *pref = debug_get_option_foveation_mechanism();
+	if (pref == NULL || strcmp(pref, "auto") == 0) {
+		return COMP_VULKAN_FOVEATION_AUTO;
+	}
+	if (strcmp(pref, "off") == 0) {
+		return COMP_VULKAN_FOVEATION_OFF;
+	}
+	if (strcmp(pref, "fsr") == 0) {
+		return COMP_VULKAN_FOVEATION_FSR;
+	}
+
+	COMP_WARN(c, "XRT_COMPOSITOR_FOVEATION: unknown value '%s', using auto", pref);
+	return COMP_VULKAN_FOVEATION_AUTO;
+}
+
+static bool
+compositor_wants_vulkan_foveation(struct comp_compositor *c)
+{
+	return !c->settings.use_compute && c->xdev->supported.foveation;
 }
 
 
@@ -810,6 +835,25 @@ select_instances_extensions(struct comp_compositor *c,
 }
 
 static bool
+append_foveation_device_extensions(struct u_extension_list_builder *optional_device_ext_builder,
+                                   bool enable_foveation_features,
+                                   enum comp_vulkan_foveation_preference foveation_preference)
+{
+	if (!enable_foveation_features || foveation_preference == COMP_VULKAN_FOVEATION_OFF) {
+		return true;
+	}
+
+#ifdef VK_KHR_fragment_shading_rate
+	if (u_extension_list_builder_append_unique(optional_device_ext_builder,
+	                                           VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME) < 0) {
+		return false;
+	}
+#endif
+
+	return true;
+}
+
+static bool
 compositor_init_vulkan(struct comp_compositor *c)
 {
 	COMP_TRACE_MARKER();
@@ -864,6 +908,8 @@ compositor_init_vulkan(struct comp_compositor *c)
 
 	struct u_extension_list_builder *required_device_ext_builder = u_extension_list_builder_create();
 	struct u_extension_list_builder *optional_device_ext_builder = u_extension_list_builder_create();
+	bool enable_foveation_features = compositor_wants_vulkan_foveation(c);
+	enum comp_vulkan_foveation_preference foveation_preference = compositor_get_foveation_preference(c);
 
 	// Required device extensions.
 	u_extension_list_builder_append_array(       //
@@ -882,6 +928,16 @@ compositor_init_vulkan(struct comp_compositor *c)
 	    optional_device_ext_builder,                         //
 	    c->target_factory->optional_device_extensions,       //
 	    c->target_factory->optional_device_extension_count); //
+
+	if (!append_foveation_device_extensions(optional_device_ext_builder, enable_foveation_features,
+	                                        foveation_preference)) {
+		COMP_ERROR(c, "Failed to select foveation device extensions.");
+		u_extension_list_builder_destroy(&required_device_ext_builder);
+		u_extension_list_builder_destroy(&optional_device_ext_builder);
+		u_extension_list_destroy(&required_instance_ext_list);
+		u_extension_list_destroy(&optional_instance_ext_list);
+		return false;
+	}
 
 	// Consumes the builder and returns a new list.
 	struct u_extension_list *required_device_ext_list =
@@ -911,6 +967,8 @@ compositor_init_vulkan(struct comp_compositor *c)
 	    .optional_device_extensions = optional_device_ext_list,
 	    .log_level = c->settings.log_level,
 	    .only_compute_queue = c->settings.use_compute,
+	    .enable_foveation_features = enable_foveation_features,
+	    .foveation_preference = foveation_preference,
 	    .selected_gpu_index = c->settings.selected_gpu_index,
 	    .client_gpu_index = c->settings.client_gpu_index,
 	    .target_info = target_info,

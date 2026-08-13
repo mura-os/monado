@@ -11,6 +11,7 @@ add_library(
 	render_buffer.c
 	render_compute.c
 	render_distortion.c
+	render_foveation.c
 	render_gfx.c
 	render_interface.h
 	render_resources.c

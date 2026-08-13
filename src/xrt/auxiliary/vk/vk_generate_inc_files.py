@@ -309,6 +309,12 @@ def get_instance_cmds():
         None,
         Cmd("vkGetPhysicalDeviceSurfaceCapabilities2KHR", requires=("VK_KHR_get_surface_capabilities2",)),
         Cmd("vkGetPhysicalDeviceSurfaceFormats2KHR", requires=("VK_KHR_get_surface_capabilities2",)),
+        None,
+        Cmd(
+            "vkGetPhysicalDeviceFragmentShadingRatesKHR",
+            member_name="vkGetPhysicalDeviceFragmentShadingRates",
+            requires=("VK_KHR_fragment_shading_rate",),
+        ),
     ]
 
 
@@ -330,6 +336,7 @@ DEVICE_EXTENSIONS_TO_CHECK = [
     "VK_KHR_external_memory",
     "VK_KHR_external_semaphore_fd",
     "VK_KHR_format_feature_flags2",
+    "VK_KHR_fragment_shading_rate",
     "VK_KHR_global_priority",
     "VK_KHR_image_format_list",
     "VK_KHR_maintenance1",

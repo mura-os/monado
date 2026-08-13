@@ -2494,6 +2494,27 @@ enum xrt_visibility_mask_type
 	XRT_VISIBILITY_MASK_TYPE_LINE_LOOP = 3,
 };
 
+/*!
+ * Hardware mechanism a foveation map is expressed in: which the compositor
+ * selected decides the texel format the device writes in
+ * @ref xrt_device::get_foveation_map.
+ *
+ * @see xrt_foveation_map
+ * @ingroup xrt_iface
+ */
+enum xrt_foveation_mechanism
+{
+	XRT_FOVEATION_MECHANISM_NONE = 0,
+
+	/*!
+	 * Vulkan fragment shading rate attachment (VK_KHR_fragment_shading_rate):
+	 * one R8_UINT texel per cell holding a packed fragment size. Texel
+	 * values must come from @ref xrt_foveation_map::fsr_rates, which is
+	 * pre-clamped to the sizes the GPU supports.
+	 */
+	XRT_FOVEATION_MECHANISM_VK_FSR,
+};
+
 
 /*
  *

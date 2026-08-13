@@ -26,6 +26,16 @@ extern "C" {
 
 
 /*!
+ * Which Vulkan foveation mechanism the compositor should try to enable.
+ */
+enum comp_vulkan_foveation_preference
+{
+	COMP_VULKAN_FOVEATION_AUTO = 0,
+	COMP_VULKAN_FOVEATION_OFF,
+	COMP_VULKAN_FOVEATION_FSR,
+};
+
+/*!
  * Arguments to Vulkan bundle initialisation, all args needs setting.
  */
 struct comp_vulkan_arguments
@@ -56,6 +66,12 @@ struct comp_vulkan_arguments
 
 	//! Should we try to enable timeline semaphores if available
 	bool timeline_semaphore;
+
+	//! Should we request Vulkan foveation device features if available?
+	bool enable_foveation_features;
+
+	//! Which Vulkan foveation mechanism should be requested.
+	enum comp_vulkan_foveation_preference foveation_preference;
 
 	//! Vulkan physical device to be selected, -1 for auto.
 	int selected_gpu_index;

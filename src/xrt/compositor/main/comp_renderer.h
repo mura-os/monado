@@ -60,6 +60,16 @@ comp_renderer_destroy(struct comp_renderer **ptr_r);
 XRT_CHECK_RESULT xrt_result_t
 comp_renderer_draw(struct comp_renderer *r);
 
+/*!
+ * Re-sync the device's begin/end_foveation span with the rendering state,
+ * called by comp_compositor_set_rendering on every pause/resume transition.
+ *
+ * @public @memberof comp_renderer
+ * @ingroup comp_main
+ */
+void
+comp_renderer_update_foveation_signal(struct comp_renderer *r);
+
 void
 comp_renderer_add_debug_vars(struct comp_renderer *self);
 

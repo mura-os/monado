@@ -238,6 +238,30 @@ u_device_ni_get_compositor_info(struct xrt_device *xdev,
                                 struct xrt_device_compositor_info *out_info);
 
 /*!
+ * Not implemented function for @ref xrt_device::begin_foveation.
+ *
+ * @ingroup aux_util
+ */
+xrt_result_t
+u_device_ni_begin_foveation(struct xrt_device *xdev, const struct xrt_foveation_begin_info *info);
+
+/*!
+ * Not implemented function for @ref xrt_device::end_foveation.
+ *
+ * @ingroup aux_util
+ */
+xrt_result_t
+u_device_ni_end_foveation(struct xrt_device *xdev);
+
+/*!
+ * Not implemented function for @ref xrt_device::get_foveation_map.
+ *
+ * @ingroup aux_util
+ */
+xrt_result_t
+u_device_ni_get_foveation_map(struct xrt_device *xdev, struct xrt_foveation_map *map);
+
+/*!
  * Not implemented function for @ref xrt_device::begin_feature.
  *
  * @ingroup aux_util

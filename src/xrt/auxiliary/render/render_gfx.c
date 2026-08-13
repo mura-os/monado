@@ -220,6 +220,21 @@ begin_dynamic_rendering(struct vk_bundle *vk,
 	    .pColorAttachments = &color_attachment,
 	};
 
+	// Attach the pass's foveation map, if the render pass is foveated.
+#ifdef VK_KHR_fragment_shading_rate
+	VkRenderingFragmentShadingRateAttachmentInfoKHR fsr_attachment = {
+	    .sType = VK_STRUCTURE_TYPE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR,
+	    .imageLayout = VK_IMAGE_LAYOUT_FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR,
+	    .shadingRateAttachmentTexelSize = rtr->r->foveation.texel_size,
+	};
+	if (rtr->rgrp->foveation_mechanism == RENDER_FOVEATION_MECHANISM_FSR && rtr->foveation != NULL &&
+	    render_foveation_map_current_view(rtr->foveation) != VK_NULL_HANDLE) {
+		fsr_attachment.imageView = render_foveation_map_current_view(rtr->foveation);
+		fsr_attachment.pNext = rendering_info.pNext;
+		rendering_info.pNext = &fsr_attachment;
+	}
+#endif
+
 	vk->vkCmdBeginRendering(command_buffer, &rendering_info);
 }
 
@@ -467,6 +482,7 @@ XRT_CHECK_RESULT static VkResult
 create_layer_pipeline(struct vk_bundle *vk,
                       VkRenderPass render_pass,
                       VkFormat color_format,
+                      enum render_foveation_mechanism foveation_mechanism,
                       VkPipelineLayout pipeline_layout,
                       VkPipelineCache pipeline_cache,
                       VkBlendFactor src_blend_factor,
@@ -617,9 +633,31 @@ create_layer_pipeline(struct vk_bundle *vk,
 	}
 #endif
 
+	VkPipelineCreateFlags pipeline_flags = 0;
+
+#ifdef VK_KHR_fragment_shading_rate
+	/*
+	 * Foveated pass: the attachment map replaces the pipeline rate
+	 * (combiners {keep, replace}), and using a shading-rate attachment
+	 * under dynamic rendering must be declared at pipeline create time.
+	 */
+	VkPipelineFragmentShadingRateStateCreateInfoKHR fsr_state = {
+	    .sType = VK_STRUCTURE_TYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR,
+	    .pNext = pipeline_pnext,
+	    .fragmentSize = {1, 1},
+	    .combinerOps = {VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR,
+	                    VK_FRAGMENT_SHADING_RATE_COMBINER_OP_REPLACE_KHR},
+	};
+	if (foveation_mechanism == RENDER_FOVEATION_MECHANISM_FSR) {
+		pipeline_pnext = &fsr_state;
+		pipeline_flags |= VK_PIPELINE_CREATE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
+	}
+#endif
+
 	const VkGraphicsPipelineCreateInfo pipeline_info = {
 	    .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 	    .pNext = pipeline_pnext,
+	    .flags = pipeline_flags,
 	    .stageCount = ARRAY_SIZE(shader_stages),
 	    .pStages = shader_stages,
 	    .pVertexInputState = &vertex_input_state,
@@ -672,6 +710,7 @@ XRT_CHECK_RESULT static VkResult
 create_mesh_pipeline_internal(struct vk_bundle *vk,
                               VkRenderPass render_pass,
                               VkFormat color_format,
+                              enum render_foveation_mechanism foveation_mechanism,
                               VkPipelineLayout pipeline_layout,
                               VkPipelineCache pipeline_cache,
                               uint32_t src_binding,
@@ -815,9 +854,31 @@ create_mesh_pipeline_internal(struct vk_bundle *vk,
 	}
 #endif
 
+	VkPipelineCreateFlags pipeline_flags = 0;
+
+#ifdef VK_KHR_fragment_shading_rate
+	/*
+	 * Foveated pass: the attachment map replaces the pipeline rate
+	 * (combiners {keep, replace}), and using a shading-rate attachment
+	 * under dynamic rendering must be declared at pipeline create time.
+	 */
+	VkPipelineFragmentShadingRateStateCreateInfoKHR fsr_state = {
+	    .sType = VK_STRUCTURE_TYPE_PIPELINE_FRAGMENT_SHADING_RATE_STATE_CREATE_INFO_KHR,
+	    .pNext = pipeline_pnext,
+	    .fragmentSize = {1, 1},
+	    .combinerOps = {VK_FRAGMENT_SHADING_RATE_COMBINER_OP_KEEP_KHR,
+	                    VK_FRAGMENT_SHADING_RATE_COMBINER_OP_REPLACE_KHR},
+	};
+	if (foveation_mechanism == RENDER_FOVEATION_MECHANISM_FSR) {
+		pipeline_pnext = &fsr_state;
+		pipeline_flags |= VK_PIPELINE_CREATE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
+	}
+#endif
+
 	VkGraphicsPipelineCreateInfo pipeline_info = {
 	    .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 	    .pNext = pipeline_pnext,
+	    .flags = pipeline_flags,
 	    .stageCount = ARRAY_SIZE(shader_stages),
 	    .pStages = shader_stages,
 	    .pVertexInputState = &vertex_input_state,
@@ -853,6 +914,7 @@ XRT_CHECK_RESULT static VkResult
 create_mesh_pipeline(struct vk_bundle *vk,
                      VkRenderPass render_pass,
                      VkFormat color_format,
+                     enum render_foveation_mechanism foveation_mechanism,
                      VkPipelineLayout pipeline_layout,
                      VkPipelineCache pipeline_cache,
                      uint32_t src_binding,
@@ -886,6 +948,7 @@ create_mesh_pipeline(struct vk_bundle *vk,
 	    vk,                               //
 	    render_pass,                      //
 	    color_format,                     //
+	    foveation_mechanism,              //
 	    pipeline_layout,                  //
 	    pipeline_cache,                   //
 	    src_binding,                      //
@@ -939,6 +1002,7 @@ XRT_CHECK_RESULT static VkResult
 create_mesh_nlayer_pipeline(struct vk_bundle *vk,
                             VkRenderPass render_pass,
                             VkFormat color_format,
+                            enum render_foveation_mechanism foveation_mechanism,
                             VkPipelineLayout pipeline_layout,
                             VkPipelineCache pipeline_cache,
                             uint32_t src_binding,
@@ -988,6 +1052,7 @@ create_mesh_nlayer_pipeline(struct vk_bundle *vk,
 	    vk,                               //
 	    render_pass,                      //
 	    color_format,                     //
+	    foveation_mechanism,              //
 	    pipeline_layout,                  //
 	    pipeline_cache,                   //
 	    src_binding,                      //
@@ -1061,10 +1126,19 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
                             struct render_resources *r,
                             VkFormat format,
                             VkAttachmentLoadOp load_op,
-                            VkImageLayout final_layout)
+                            VkImageLayout final_layout,
+                            bool foveated)
 {
 	struct vk_bundle *vk = r->vk;
 	VkResult ret;
+
+	// Set first so a mid-init failure leaves a struct fini can clean up.
+	rgrp->r = r;
+
+	// Decided before pipeline creation, all pipelines depend on it. A
+	// selected mechanism implies dynamic rendering, the only path the
+	// foveation attachments are wired into.
+	rgrp->foveation_mechanism = foveated ? r->foveation.mechanism : RENDER_FOVEATION_MECHANISM_NONE;
 
 	// Dynamic rendering does not use a VkRenderPass object; the pipelines and
 	// the target attachment carry the format instead.
@@ -1088,6 +1162,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	    vk,                        //
 	    rgrp->render_pass,         //
 	    format,                    //
+	    rgrp->foveation_mechanism, //
 	    r->mesh.pipeline_layout,   //
 	    r->pipeline_cache,         //
 	    r->mesh.src_binding,       //
@@ -1108,6 +1183,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	    vk,                             //
 	    rgrp->render_pass,              //
 	    format,                         //
+	    rgrp->foveation_mechanism,      //
 	    r->mesh.pipeline_layout,        //
 	    r->pipeline_cache,              //
 	    r->mesh.src_binding,            //
@@ -1128,6 +1204,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	    vk,                                         //
 	    rgrp->render_pass,                          //
 	    format,                                     //
+	    rgrp->foveation_mechanism,                  //
 	    r->gfx.layer.shared.pipeline_layout,        //
 	    r->pipeline_cache,                          //
 	    blend_factor_premultiplied_alpha,           // src_blend_factor
@@ -1142,6 +1219,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	    vk,                                           //
 	    rgrp->render_pass,                            //
 	    format,                                       //
+	    rgrp->foveation_mechanism,                    //
 	    r->gfx.layer.shared.pipeline_layout,          //
 	    r->pipeline_cache,                            //
 	    blend_factor_unpremultiplied_alpha,           // src_blend_factor
@@ -1157,6 +1235,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	    vk,                                          //
 	    rgrp->render_pass,                           //
 	    format,                                      //
+	    rgrp->foveation_mechanism,                   //
 	    r->gfx.layer.shared.pipeline_layout,         //
 	    r->pipeline_cache,                           //
 	    blend_factor_premultiplied_alpha,            // src_blend_factor
@@ -1171,6 +1250,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	    vk,                                            //
 	    rgrp->render_pass,                             //
 	    format,                                        //
+	    rgrp->foveation_mechanism,                     //
 	    r->gfx.layer.shared.pipeline_layout,           //
 	    r->pipeline_cache,                             //
 	    blend_factor_unpremultiplied_alpha,            // src_blend_factor
@@ -1186,6 +1266,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	    vk,                                     //
 	    rgrp->render_pass,                      //
 	    format,                                 //
+	    rgrp->foveation_mechanism,              //
 	    r->gfx.layer.shared.pipeline_layout,    //
 	    r->pipeline_cache,                      //
 	    blend_factor_premultiplied_alpha,       // src_blend_factor
@@ -1200,6 +1281,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	    vk,                                       //
 	    rgrp->render_pass,                        //
 	    format,                                   //
+	    rgrp->foveation_mechanism,                //
 	    r->gfx.layer.shared.pipeline_layout,      //
 	    r->pipeline_cache,                        //
 	    blend_factor_unpremultiplied_alpha,       // src_blend_factor
@@ -1215,6 +1297,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	    vk,                                     //
 	    rgrp->render_pass,                      //
 	    format,                                 //
+	    rgrp->foveation_mechanism,              //
 	    r->gfx.layer.shared.pipeline_layout,    //
 	    r->pipeline_cache,                      //
 	    blend_factor_premultiplied_alpha,       // src_blend_factor
@@ -1228,6 +1311,7 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	    vk,                                       //
 	    rgrp->render_pass,                        //
 	    format,                                   //
+	    rgrp->foveation_mechanism,                //
 	    r->gfx.layer.shared.pipeline_layout,      //
 	    r->pipeline_cache,                        //
 	    blend_factor_unpremultiplied_alpha,       // src_blend_factor
@@ -1244,7 +1328,6 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 	rgrp->nlayer.enabled = r->gfx.nlayer.enabled && r->gfx.nlayer.effective_nlayer_max > 0;
 
 	// Set fields.
-	rgrp->r = r;
 	rgrp->format = format;
 	rgrp->sample_count = VK_SAMPLE_COUNT_1_BIT;
 	rgrp->load_op = load_op;
@@ -1256,6 +1339,11 @@ render_gfx_render_pass_init(struct render_gfx_render_pass *rgrp,
 void
 render_gfx_render_pass_fini(struct render_gfx_render_pass *rgrp)
 {
+	// Never initialized, or already finished.
+	if (rgrp->r == NULL) {
+		return;
+	}
+
 	struct vk_bundle *vk = rgrp->r->vk;
 
 	D(RenderPass, rgrp->render_pass);
@@ -1420,6 +1508,7 @@ render_gfx_render_pass_get_or_create_nlayer_pipeline(struct render_gfx_render_pa
 	    r->vk,                                           //
 	    rgrp->render_pass,                               //
 	    rgrp->format,                                    //
+	    rgrp->foveation_mechanism,                       //
 	    do_passthrough ? r->gfx.nlayer.passthrough_pipeline_layouts[descriptor_layer_count - 1]
 	                   : r->gfx.nlayer.pipeline_layouts[descriptor_layer_count - 1],
 	    r->pipeline_cache,                               //
@@ -1459,15 +1548,21 @@ bool
 render_gfx_target_resources_init(struct render_gfx_target_resources *rtr,
                                  struct render_resources *r,
                                  struct render_gfx_render_pass *rgrp,
+                                 struct render_foveation_map *foveation_map,
                                  VkImage target_image,
                                  VkImageView target,
                                  VkExtent2D extent)
 {
 	struct vk_bundle *vk = r->vk;
 
+	// Foveated pass: all its pipelines declare the attachment, so the
+	// caller must provide the shared map to attach.
+	assert((rgrp->foveation_mechanism != RENDER_FOVEATION_MECHANISM_NONE) == (foveation_map != NULL));
+
 	// Set fields.
 	rtr->r = r;
 	rtr->rgrp = rgrp;
+	rtr->foveation = foveation_map;
 	rtr->image = target_image;
 	rtr->view = target;
 	rtr->render_area = (VkRect2D){
@@ -1488,12 +1583,18 @@ render_gfx_target_resources_init(struct render_gfx_target_resources *rtr,
 		VK_NAME_FRAMEBUFFER(vk, rtr->framebuffer, "render_gfx_target_resources framebuffer");
 	}
 
+
 	return true;
 }
 
 void
 render_gfx_target_resources_fini(struct render_gfx_target_resources *rtr)
 {
+	// Never initialized, or already finished.
+	if (rtr->r == NULL) {
+		return;
+	}
+
 	struct vk_bundle *vk = vk_from_rtr(rtr);
 
 	D(Framebuffer, rtr->framebuffer);
@@ -1613,6 +1714,11 @@ render_gfx_begin_target(struct render_gfx *render,
 
 	assert(render->rtr == NULL);
 	render->rtr = rtr;
+
+	// A staged foveation map update must land before the pass reads it.
+	if (rtr->foveation != NULL) {
+		render_foveation_map_record_pending(render->r, rtr->foveation, render->r->cmd);
+	}
 
 	begin_render_pass(  //
 	    vk,             //

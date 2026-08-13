@@ -53,12 +53,13 @@ chl_scratch_ensure(struct chl_scratch *scratch,
 	chl_scratch_free_resources(scratch, rr);
 
 	// Shared render pass between all scratch images.
-	bret = render_gfx_render_pass_init(            //
-	    &scratch->render_pass,                     // rgrp
-	    rr,                                        // struct render_resources
-	    format,                                    // format
-	    VK_ATTACHMENT_LOAD_OP_CLEAR,               // load_op
-	    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL); // final_layout
+	bret = render_gfx_render_pass_init(           //
+	    &scratch->render_pass,                    // rgrp
+	    rr,                                       // struct render_resources
+	    format,                                   // format
+	    VK_ATTACHMENT_LOAD_OP_CLEAR,              // load_op
+	    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, // final_layout
+	    false);                                   // foveated, scratch is sampled not scanned out
 	if (!bret) {
 		VK_ERROR(vk, "render_gfx_render_pass_init: false");
 		return false;
@@ -99,6 +100,7 @@ chl_scratch_ensure(struct chl_scratch *scratch,
 			    &scratch->views[i].targets[k], // rtr
 			    rr,                            // struct render_resources
 			    &scratch->render_pass,         // struct render_gfx_render_pass
+			    NULL,                          // foveation_map, scratch is not foveated
 			    target_image,                  // target_image
 			    target_image_view,             // target
 			    extent);                       // extent
