@@ -171,17 +171,12 @@ compositor_end_session(struct xrt_compositor *xc)
 	COMP_DEBUG(c, "END_SESSION");
 
 	/*
-	 * Nothing gets rendered between sessions and presence transitions are
-	 * only applied on the frame loop, so on power-managing devices leave
-	 * the panels powered down; the next session lights them again.
+	 * The stopping frame normally clears the display and pauses rendering.
+	 * Also handle teardown after an error, where that frame may not have
+	 * completed. The next frame with layers resumes rendering and powers the
+	 * output back up.
 	 */
-	if (c->presence.input != NULL && c->presence.displaying) {
-		c->presence.displaying = false;
-		if (c->presence.manage_display_power && c->target != NULL) {
-			COMP_INFO(c, "Session ended, turning display output off.");
-			comp_target_set_output_enabled(c->target, false);
-		}
-	}
+	comp_compositor_set_rendering(c, false);
 
 	compositor_session_cleanup(c);
 
@@ -1150,8 +1145,9 @@ comp_main_create_system_compositor(struct xrt_device *xdev,
 	// Do this as early as possible.
 	comp_base_init(&c->base);
 
+	c->display.manage_power = xdev->supported.presence_display_power;
+	c->display.rendering = true;
 	c->presence.user_present = true;
-	c->presence.displaying = true;
 	c->presence.off_delay_ns = debug_get_num_option_presence_off_delay_ms() * (int64_t)U_TIME_1MS_IN_NS;
 
 	// Init the settings to default.
@@ -1282,6 +1278,7 @@ comp_main_create_system_compositor(struct xrt_device *xdev,
 	sys_info->supported_blend_mode_count = (uint8_t)xdev->hmd->blend_mode_count;
 
 	u_var_add_root(c, "Compositor", true);
+	u_var_add_bool(c, &c->display.rendering, "Rendering and presenting");
 
 	float target_frame_time_ms = (float)ns_to_ms(c->frame_interval_ns);
 	u_frame_times_widget_init(&c->compositor_frame_times, target_frame_time_ms, 10.f);
@@ -1339,11 +1336,9 @@ comp_main_create_system_compositor(struct xrt_device *xdev,
 		}
 	}
 	if (c->presence.input != NULL) {
-		c->presence.manage_display_power = xdev->supported.presence_display_power;
 		COMP_INFO(c, "Watching user presence%s.",
-		          c->presence.manage_display_power ? " for display power" : "");
+		          c->display.manage_power ? " for display power" : "");
 		u_var_add_bool(c, &c->presence.user_present, "User present");
-		u_var_add_bool(c, &c->presence.displaying, "Displaying");
 	}
 
 	// Standard app pacer.

@@ -947,7 +947,8 @@ static XRT_CHECK_RESULT VkResult
 dispatch_graphics(struct comp_renderer *r,
                   struct render_gfx *render,
                   struct chl_frame_state *frame_state,
-                  enum comp_target_fov_source fov_source)
+                  enum comp_target_fov_source fov_source,
+                  uint32_t layer_count)
 {
 	COMP_TRACE_MARKER();
 
@@ -957,7 +958,6 @@ dispatch_graphics(struct comp_renderer *r,
 
 	// Basics
 	const struct comp_layer *layers = c->base.layer_accum.layers;
-	uint32_t layer_count = c->base.layer_accum.layer_count;
 
 	// Resources for the distortion render target.
 	struct render_gfx_target_resources *rtr = &r->rtr_array[r->acquired_buffer];
@@ -1019,7 +1019,8 @@ static XRT_CHECK_RESULT VkResult
 dispatch_compute(struct comp_renderer *r,
                  struct render_compute *render,
                  struct chl_frame_state *frame_state,
-                 enum comp_target_fov_source fov_source)
+                 enum comp_target_fov_source fov_source,
+                 uint32_t layer_count)
 {
 	COMP_TRACE_MARKER();
 
@@ -1029,7 +1030,6 @@ dispatch_compute(struct comp_renderer *r,
 
 	// Basics
 	const struct comp_layer *layers = c->base.layer_accum.layers;
-	uint32_t layer_count = c->base.layer_accum.layer_count;
 
 	// Device view information.
 	struct xrt_fov fovs[XRT_MAX_VIEWS];
@@ -1117,12 +1117,8 @@ comp_renderer_draw(struct comp_renderer *r)
 
 	comp_target_update_timings(ct);
 
-	/*
-	 * While the user is not wearing the HMD rendering is skipped, and on
-	 * devices asking for display power management the target output is
-	 * also powered down; the timing below keeps running so app frame
-	 * loops don't notice.
-	 */
+	/* Poll presence before deciding whether this frame should be shown. */
+	int64_t now_ns = os_monotonic_get_ns();
 	if (c->presence.input != NULL) {
 		xrt_device_update_inputs(c->xdev);
 		bool user_present = c->presence.input->value.boolean;
@@ -1130,34 +1126,46 @@ comp_renderer_draw(struct comp_renderer *r)
 		if (user_present != c->presence.user_present) {
 			c->presence.user_present = user_present;
 			if (!user_present) {
-				c->presence.absent_since_ns = os_monotonic_get_ns();
+				c->presence.absent_since_ns = now_ns;
 			}
-		}
-
-		bool want = user_present;
-		if (!user_present && c->presence.displaying &&
-		    os_monotonic_get_ns() - c->presence.absent_since_ns < c->presence.off_delay_ns) {
-			// Still within the off delay, keep displaying.
-			want = true;
-		}
-
-		if (want != c->presence.displaying) {
-			COMP_INFO(c, "User is %s, %s rendering.", user_present ? "present" : "absent",
-			          want ? "resuming" : "pausing");
-			if (c->presence.manage_display_power) {
-				comp_target_set_output_enabled(ct, want);
-			}
-			c->presence.displaying = want;
-		}
-
-		if (!c->presence.displaying) {
-			comp_target_mark_submit_begin(ct, c->frame.rendering.id, os_monotonic_get_ns());
-			comp_target_mark_submit_end(ct, c->frame.rendering.id, os_monotonic_get_ns());
-
-			comp_frame_clear_locked(&c->frame.rendering);
-			return XRT_SUCCESS;
 		}
 	}
+
+	bool user_allows_rendering = c->presence.input == NULL || c->presence.user_present;
+	if (!user_allows_rendering && c->display.rendering &&
+	    now_ns - c->presence.absent_since_ns < c->presence.off_delay_ns) {
+		// Still within the off delay, keep displaying.
+		user_allows_rendering = true;
+	}
+
+	uint32_t active_layer_count = c->base.layer_accum.layer_count;
+	bool have_layers = active_layer_count > 0;
+	bool want_rendering = user_allows_rendering && have_layers;
+
+	if (want_rendering && !c->display.rendering) {
+		COMP_INFO(c, "User is present and layers are available, resuming rendering.");
+		comp_compositor_set_rendering(c, true);
+	}
+
+	/*
+	 * Keep the timing loop alive while paused, but do not acquire, render or
+	 * present. A client can therefore resume its frame loop normally.
+	 */
+	if (!c->display.rendering) {
+		comp_target_mark_submit_begin(ct, c->frame.rendering.id, os_monotonic_get_ns());
+		comp_target_mark_submit_end(ct, c->frame.rendering.id, os_monotonic_get_ns());
+
+		comp_frame_clear_locked(&c->frame.rendering);
+		return XRT_SUCCESS;
+	}
+
+	/*
+	 * On the transition to paused, render without layers once. Both renderer
+	 * paths turn this into a black clear. Only mark the display paused after
+	 * that frame has been presented successfully, otherwise retry next frame.
+	 */
+	bool clear_and_pause = !want_rendering;
+	uint32_t render_layer_count = clear_and_pause ? 0 : active_layer_count;
 
 	if (r->acquired_buffer < 0) {
 		// Ensures that renderings are created.
@@ -1170,7 +1178,7 @@ comp_renderer_draw(struct comp_renderer *r)
 	const uint32_t view_count = c->nr.view_count;
 	enum comp_target_fov_source fov_source = COMP_TARGET_FOV_SOURCE_DISTORTION;
 
-	bool fast_path = c->base.frame_params.one_projection_layer_fast_path;
+	bool fast_path = !clear_and_pause && c->base.frame_params.one_projection_layer_fast_path;
 	bool do_timewarp = !c->debug.atw_off;
 
 	// Consistency check.
@@ -1193,10 +1201,10 @@ comp_renderer_draw(struct comp_renderer *r)
 	VkResult res = VK_SUCCESS;
 	if (use_compute) {
 		render_compute_init(&render_c, &c->nr);
-		res = dispatch_compute(r, &render_c, &frame_state, fov_source);
+		res = dispatch_compute(r, &render_c, &frame_state, fov_source, render_layer_count);
 	} else {
 		render_gfx_init(&render_g, &c->nr);
-		res = dispatch_graphics(r, &render_g, &frame_state, fov_source);
+		res = dispatch_graphics(r, &render_g, &frame_state, fov_source, render_layer_count);
 	}
 	if (res != VK_SUCCESS) {
 		return XRT_ERROR_VULKAN;
@@ -1313,6 +1321,12 @@ comp_renderer_draw(struct comp_renderer *r)
 
 	if (present_success) {
 		renderer_wait_for_present(r, desired_present_time_ns);
+	}
+
+	if (xret == XRT_SUCCESS && presented && clear_and_pause) {
+		const char *reason = user_allows_rendering ? "No layers are available" : "User is absent";
+		COMP_INFO(c, "%s, pausing rendering after clearing the display.", reason);
+		comp_compositor_set_rendering(c, false);
 	}
 
 	comp_target_update_timings(ct);

@@ -161,27 +161,38 @@ struct comp_compositor
 	} debug;
 
 	/*!
+	 * Rendering and display-output state. Rendering is paused when there
+	 * are no layers, or while the user is away when presence is available.
+	 * Before pausing, the renderer presents one black frame so targets
+	 * without display power control do not retain the last application
+	 * image. All fields are render thread only.
+	 */
+	struct
+	{
+		//! Also power the display down/up when rendering pauses/resumes.
+		bool manage_power;
+
+		//! Are frames currently being rendered and presented.
+		bool rendering;
+	} display;
+
+	/*!
 	 * User presence (HMD wear) state, polled from the head device's
-	 * @ref XRT_INPUT_GENERIC_HEAD_DETECT input. Rendering is paused while
-	 * the user is away; the target output is additionally powered down
-	 * when enabled. The render thread polls and applies transitions in
-	 * @ref comp_renderer_draw, all fields are render thread only.
+	 * @ref XRT_INPUT_GENERIC_HEAD_DETECT input. The render thread polls it
+	 * in @ref comp_renderer_draw and combines it with layer availability
+	 * to control rendering and presentation. All fields are render thread
+	 * only.
 	 */
 	struct
 	{
 		//! The head device's presence input, NULL disables the feature.
 		struct xrt_input *input;
 
-		//! Also power the display down/up on presence changes.
-		bool manage_display_power;
-
 		//! Is the user wearing the HMD right now.
 		bool user_present;
 		//! When the user went absent.
 		int64_t absent_since_ns;
 
-		//! Are frames being rendered and presented.
-		bool displaying;
 		//! Keep displaying this long after the user goes absent.
 		int64_t off_delay_ns;
 	} presence;
@@ -206,6 +217,26 @@ static inline struct comp_compositor *
 comp_compositor(struct xrt_compositor *xc)
 {
 	return (struct comp_compositor *)xc;
+}
+
+/*!
+ * Set whether frames are rendered and presented, and keep target output
+ * power in sync on devices that opt in to power management.
+ *
+ * @private @memberof comp_compositor
+ */
+static inline void
+comp_compositor_set_rendering(struct comp_compositor *c, bool rendering)
+{
+	if (c->display.rendering == rendering) {
+		return;
+	}
+
+	if (c->display.manage_power && c->target != NULL) {
+		comp_target_set_output_enabled(c->target, rendering);
+	}
+
+	c->display.rendering = rendering;
 }
 
 /*!

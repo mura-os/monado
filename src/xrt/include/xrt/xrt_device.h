@@ -322,9 +322,10 @@ struct xrt_device_supported
 	bool eye_gaze;
 	bool presence;
 	/*!
-	 * Power the display down while the user is absent and back up on
-	 * return, requires @ref presence. Leave unset on devices that manage
-	 * their own panel power or react badly to losing display signal.
+	 * Power the display down when the compositor is not rendering anything,
+	 * and power it back up when rendering resumes. Leave unset on devices
+	 * that manage their own panel power or react badly to losing display
+	 * signal.
 	 */
 	bool presence_display_power;
 	bool force_feedback;
