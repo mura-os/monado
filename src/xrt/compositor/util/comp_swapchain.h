@@ -127,6 +127,15 @@ comp_swapchain(struct xrt_swapchain *xsc)
 	return (struct comp_swapchain *)xsc;
 }
 
+/*!
+ * Does the swapchain's Vulkan format have an alpha component?
+ *
+ * @ingroup comp_util
+ * @public @memberof comp_swapchain
+ */
+bool
+comp_swapchain_format_has_alpha(const struct comp_swapchain *sc);
+
 
 /*
  *

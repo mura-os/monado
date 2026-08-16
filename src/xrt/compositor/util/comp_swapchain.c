@@ -23,6 +23,10 @@
 #include "vk/vk_helpers.h"
 #include "vk/vk_mini_helpers.h"
 
+// Keep after the vk headers (needs their platform defines) and in this one
+// file only: in C this header defines its format table with external linkage.
+#include "vulkan/utility/vk_format_utils.h"
+
 #include "util/comp_swapchain.h"
 
 #include <stdio.h>
@@ -519,6 +523,12 @@ really_destroy(struct comp_swapchain *sc)
  * 'Exported' parent-class functions.
  *
  */
+
+bool
+comp_swapchain_format_has_alpha(const struct comp_swapchain *sc)
+{
+	return vkuFormatHasAlpha((VkFormat)sc->vkic.info.format);
+}
 
 xrt_result_t
 comp_swapchain_create_init(struct comp_swapchain *sc,
