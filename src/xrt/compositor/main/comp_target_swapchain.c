@@ -898,11 +898,13 @@ comp_target_swapchain_create_images(struct comp_target *ct,
 	cts->base.format = cts->surface.format.format;
 	cts->base.final_layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 	cts->base.surface_transform = surface_caps.currentTransform;
-	cts->base.present_load_op = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	// Active rendering overwrites the target viewports. The graphics renderer
+	// explicitly clears when those viewports do not cover the whole target, and
+	// for the no-layer frame shown before rendering pauses.
+	cts->base.present_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 
 #ifdef VK_KHR_shared_presentable_image
 	if (is_shared_presentable_image(cts)) {
-		cts->base.present_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 		cts->base.final_layout = VK_IMAGE_LAYOUT_SHARED_PRESENT_KHR;
 	}
 #endif

@@ -218,6 +218,9 @@ struct comp_render_dispatch_data
 		{
 			//! The resources needed for the target.
 			struct render_gfx_target_resources *rtr;
+
+			//! The target viewport/scissor rectangles cover the complete render area.
+			bool viewports_cover_render_area;
 		} gfx;
 
 		//! Members used only by CS @ref comp_render_cs
@@ -367,15 +370,20 @@ comp_render_dispatch_add_target_view(struct comp_render_dispatch_data *data,
  *
  * @param[in,out] data Common render dispatch data.
  * @param target_rtr GFX-specific resources for the entire framebuffer. Must be populated before call.
+ * @param viewports_cover_render_area Whether the target viewport/scissor rectangles form a non-overlapping partition
+ *                                    of the target render area.
  */
 static inline void
-comp_render_gfx_add_target(struct comp_render_dispatch_data *data, struct render_gfx_target_resources *target_rtr)
+comp_render_gfx_add_target(struct comp_render_dispatch_data *data,
+                           struct render_gfx_target_resources *target_rtr,
+                           bool viewports_cover_render_area)
 {
 	// Error tracking.
 	data->target.initialized = true;
 
 	// When writing into the target.
 	data->target.gfx.rtr = target_rtr;
+	data->target.gfx.viewports_cover_render_area = viewports_cover_render_area;
 }
 
 /*!

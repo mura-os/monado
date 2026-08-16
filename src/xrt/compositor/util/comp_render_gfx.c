@@ -121,6 +121,22 @@ static const VkClearColorValue background_color_active = {
 };
 
 
+static void
+begin_present_target(struct render_gfx *render,
+                     const struct comp_render_dispatch_data *d,
+                     const VkClearColorValue *color,
+                     bool views_will_be_drawn)
+{
+	render_gfx_begin_target(render, d->target.gfx.rtr, color);
+
+	bool load_op_clears = d->target.gfx.rtr->rgrp->load_op == VK_ATTACHMENT_LOAD_OP_CLEAR;
+	bool draws_cover_target = views_will_be_drawn && d->target.gfx.viewports_cover_render_area;
+	if (!load_op_clears && !draws_cover_target) {
+		render_gfx_clear_color_attachment(render, color);
+	}
+}
+
+
 /*
  *
  * Input builder functions.
@@ -496,10 +512,11 @@ do_quad_layer(struct render_gfx *render,
 static void
 crg_clear_output(struct render_gfx *render, const struct comp_render_dispatch_data *d)
 {
-	render_gfx_begin_target(     //
-	    render,                  //
-	    d->target.gfx.rtr,       //
-	    &background_color_idle); //
+	begin_present_target(       //
+	    render,                 //
+	    d,                      //
+	    &background_color_idle, //
+	    false);                 // views_will_be_drawn
 
 	render_gfx_end_target(render);
 }
@@ -568,10 +585,11 @@ crg_distortion_common(struct render_gfx *render,
 	 * Do command writing here.
 	 */
 
-	render_gfx_begin_target(       //
-	    render,                    //
-	    d->target.gfx.rtr,         //
-	    &background_color_active); //
+	begin_present_target(         //
+	    render,                   //
+	    d,                        //
+	    &background_color_active, //
+	    true);                    // views_will_be_drawn
 
 	for (uint32_t i = 0; i < d->target.view_count; i++) {
 		// Convenience.
@@ -1013,10 +1031,11 @@ crg_nlayer_fast_path(struct render_gfx *render,
 	 * Command writing: one composite draw per view.
 	 */
 
-	render_gfx_begin_target(       //
-	    render,                    //
-	    d->target.gfx.rtr,         //
-	    &background_color_active); //
+	begin_present_target(         //
+	    render,                   //
+	    d,                        //
+	    &background_color_active, //
+	    true);                    // views_will_be_drawn
 
 	for (uint32_t v = 0; v < view_count; v++) {
 		render_gfx_begin_view(                 //

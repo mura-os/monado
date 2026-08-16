@@ -163,6 +163,15 @@ struct comp_renderer
 	uint32_t buffer_count;
 
 	/*!
+	 * Target viewport layout derived from the target extent and device views.
+	 * Recomputed when the target images are created or resized.
+	 */
+	struct render_viewport_data target_viewport_datas[XRT_MAX_VIEWS];
+
+	//! True when the cached target viewports form a non-overlapping partition of the target.
+	bool target_viewports_cover_render_area;
+
+	/*!
 	 * Only relevant when using present modes from VK_KHR_shared_presentable_image,
 	 * tracks whether we have waited on the shared present semaphore at least once,
 	 * subsequents present waits are redundant and can be skipped.
@@ -228,6 +237,46 @@ calc_viewport_data(struct comp_renderer *r,
 			};
 		}
 	}
+}
+
+static bool
+viewports_cover_render_area(const struct render_viewport_data viewports[XRT_MAX_VIEWS],
+                            uint32_t view_count,
+                            VkExtent2D extent)
+{
+	if (view_count == 0 || extent.width == 0 || extent.height == 0) {
+		return false;
+	}
+
+	const uint64_t target_area = (uint64_t)extent.width * extent.height;
+	uint64_t covered_area = 0;
+
+	for (uint32_t i = 0; i < view_count; ++i) {
+		const struct render_viewport_data *viewport = &viewports[i];
+		const uint64_t x0 = viewport->x;
+		const uint64_t y0 = viewport->y;
+		const uint64_t x1 = x0 + viewport->w;
+		const uint64_t y1 = y0 + viewport->h;
+
+		if (x1 > extent.width || y1 > extent.height) {
+			return false;
+		}
+
+		for (uint32_t j = 0; j < i; ++j) {
+			const struct render_viewport_data *previous = &viewports[j];
+			const uint64_t previous_x1 = (uint64_t)previous->x + previous->w;
+			const uint64_t previous_y1 = (uint64_t)previous->y + previous->h;
+			bool overlaps_x = x0 < previous_x1 && previous->x < x1;
+			bool overlaps_y = y0 < previous_y1 && previous->y < y1;
+			if (overlaps_x && overlaps_y) {
+				return false;
+			}
+		}
+
+		covered_area += (uint64_t)viewport->w * viewport->h;
+	}
+
+	return covered_area == target_area;
 }
 
 static void
@@ -548,6 +597,7 @@ renderer_close_renderings_and_fences(struct comp_renderer *r)
 	r->buffer_count = 0;
 	r->acquired_buffer = -1;
 	r->fenced_buffer = -1;
+	r->target_viewports_cover_render_area = false;
 }
 
 /*!
@@ -629,6 +679,14 @@ renderer_ensure_images_and_renderings(struct comp_renderer *r, bool force_recrea
 	// @todo: is it safe to fail here?
 	if (!render_distortion_images_ensure(&r->c->nr, &r->c->base.vk, r->c->xdev, pre_rotate))
 		return false;
+
+	VkExtent2D target_extent = {
+	    .width = target->width,
+	    .height = target->height,
+	};
+	calc_viewport_data(r, r->target_viewport_datas, c->nr.view_count);
+	r->target_viewports_cover_render_area =
+	    viewports_cover_render_area(r->target_viewport_datas, c->nr.view_count, target_extent);
 
 	r->buffer_count = r->c->target->image_count;
 
@@ -971,10 +1029,6 @@ dispatch_graphics(struct comp_renderer *r,
 	// Resources for the distortion render target.
 	struct render_gfx_target_resources *rtr = &r->rtr_array[r->acquired_buffer];
 
-	// Viewport information.
-	struct render_viewport_data viewport_datas[XRT_MAX_VIEWS];
-	calc_viewport_data(r, viewport_datas, render->r->view_count);
-
 	// Vertex rotation information.
 	struct xrt_matrix_2x2 vertex_rots[XRT_MAX_VIEWS];
 	calc_vertex_rot_data(r, vertex_rots, render->r->view_count);
@@ -997,18 +1051,19 @@ dispatch_graphics(struct comp_renderer *r,
 	frame_state->data.scanout_direction = scanout_direction;
 
 	// Does everything.
-	chl_frame_state_gfx_default_pipeline( //
-	    frame_state,                      //
-	    render,                           //
-	    layers,                           //
-	    layer_count,                      //
-	    world_poses_scanout_begin,        //
-	    world_poses_scanout_end,          //
-	    eye_poses,                        //
-	    fovs,                             //
-	    rtr,                              //
-	    viewport_datas,                   //
-	    vertex_rots);                     //
+	chl_frame_state_gfx_default_pipeline(      //
+	    frame_state,                           //
+	    render,                                //
+	    layers,                                //
+	    layer_count,                           //
+	    world_poses_scanout_begin,             //
+	    world_poses_scanout_end,               //
+	    eye_poses,                             //
+	    fovs,                                  //
+	    rtr,                                   //
+	    r->target_viewports_cover_render_area, //
+	    r->target_viewport_datas,              //
+	    vertex_rots);                          //
 
 	// Everything is ready, submit to the queue.
 	ret = renderer_submit_queue(r, render->r->cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
@@ -1065,10 +1120,6 @@ dispatch_compute(struct comp_renderer *r,
 	VkImageView target_storage_view = r->c->target->images[r->acquired_buffer].view;
 	VkImageLayout target_final_layout = r->c->target->final_layout;
 
-	// Target view information.
-	struct render_viewport_data target_viewport_datas[XRT_MAX_VIEWS];
-	calc_viewport_data(r, target_viewport_datas, render->r->view_count);
-
 	// Does everything.
 	chl_frame_state_cs_default_pipeline( //
 	    frame_state,                     //
@@ -1082,7 +1133,7 @@ dispatch_compute(struct comp_renderer *r,
 	    target_image,                    //
 	    target_storage_view,             //
 	    target_final_layout,             //
-	    target_viewport_datas);          //
+	    r->target_viewport_datas);       //
 
 	// Everything is ready, submit to the queue.
 	ret = renderer_submit_queue(r, render->r->cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);

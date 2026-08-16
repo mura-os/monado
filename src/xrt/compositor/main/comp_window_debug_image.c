@@ -174,6 +174,7 @@ target_create_images(struct comp_target *ct,
 		dit->base.format = VK_FORMAT_R8G8B8A8_SRGB;
 	}
 	dit->base.final_layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+	dit->base.present_load_op = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 }
 
 static bool

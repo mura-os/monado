@@ -163,10 +163,11 @@ create_framebuffer(struct vk_bundle *vk,
 #ifdef VK_KHR_dynamic_rendering
 /*!
  * Transition @p image into COLOR_ATTACHMENT_OPTIMAL and begin a dynamic
- * rendering instance. The load op is CLEAR for all current callers, so the
- * previous contents are discarded (old layout UNDEFINED). srcStageMask matches
- * the render-pass fallback's external subpass dependency, so this orders after
- * the swapchain acquire semaphore (signalled at COLOR_ATTACHMENT_OUTPUT).
+ * rendering instance. The previous contents are discarded (old layout
+ * UNDEFINED); the configured load op either clears or leaves them undefined.
+ * srcStageMask matches the render-pass fallback's external subpass dependency,
+ * so this orders after the swapchain acquire semaphore (signalled at
+ * COLOR_ATTACHMENT_OUTPUT).
  */
 static void
 begin_dynamic_rendering(struct vk_bundle *vk,

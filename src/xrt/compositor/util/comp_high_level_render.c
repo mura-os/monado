@@ -117,12 +117,13 @@ chl_frame_state_gfx_set_views(struct chl_frame_state *frame_state,
 void
 chl_frame_state_gfx_set_target(struct chl_frame_state *frame_state,
                                struct render_gfx_target_resources *target_rtr,
+                               bool viewports_cover_render_area,
                                const struct render_viewport_data target_viewport_datas[XRT_MAX_VIEWS],
                                const render_scissor_data_t target_scissor_datas[XRT_MAX_VIEWS],
                                const struct xrt_matrix_2x2 vertex_rots[XRT_MAX_VIEWS])
 {
 	// Add the target info.
-	comp_render_gfx_add_target(&frame_state->data, target_rtr);
+	comp_render_gfx_add_target(&frame_state->data, target_rtr, viewports_cover_render_area);
 
 	for (uint32_t i = 0; i < frame_state->view_count; i++) {
 		// Which image of the scratch images for this view are we using.

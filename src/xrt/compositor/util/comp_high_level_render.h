@@ -113,6 +113,7 @@ chl_frame_state_gfx_set_views(struct chl_frame_state *frame_state,
 void
 chl_frame_state_gfx_set_target(struct chl_frame_state *frame_state,
                                struct render_gfx_target_resources *target_rtr,
+                               bool viewports_cover_render_area,
                                const struct render_viewport_data target_viewport_datas[XRT_MAX_VIEWS],
                                const render_scissor_data_t target_scissor_datas[XRT_MAX_VIEWS],
                                const struct xrt_matrix_2x2 vertex_rots[XRT_MAX_VIEWS]);
@@ -132,6 +133,7 @@ chl_frame_state_gfx_default_pipeline(struct chl_frame_state *frame_state,
                                      const struct xrt_pose eye_poses[XRT_MAX_VIEWS],
                                      const struct xrt_fov fovs[XRT_MAX_VIEWS],
                                      struct render_gfx_target_resources *target_rtr,
+                                     bool viewports_cover_render_area,
                                      const struct render_viewport_data target_viewport_datas[XRT_MAX_VIEWS],
                                      const struct xrt_matrix_2x2 vertex_rots[XRT_MAX_VIEWS])
 {
@@ -143,12 +145,13 @@ chl_frame_state_gfx_default_pipeline(struct chl_frame_state *frame_state,
 	    fovs,                      //
 	    layer_count);              //
 
-	chl_frame_state_gfx_set_target( //
-	    frame_state,                //
-	    target_rtr,                 //
-	    target_viewport_datas,      //
-	    target_viewport_datas,      //
-	    vertex_rots);               //
+	chl_frame_state_gfx_set_target(  //
+	    frame_state,                 //
+	    target_rtr,                  //
+	    viewports_cover_render_area, //
+	    target_viewport_datas,       //
+	    target_viewport_datas,       //
+	    vertex_rots);                //
 
 	// Start the compute pipeline.
 	render_gfx_begin(render);
