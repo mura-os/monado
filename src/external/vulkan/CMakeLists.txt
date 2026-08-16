@@ -14,3 +14,7 @@ add_library(xrt-external-vulkan-loader INTERFACE)
 target_link_libraries(
 	xrt-external-vulkan-loader INTERFACE Vulkan::Vulkan xrt-external-vulkan-headers
 	)
+
+find_package(VulkanUtilityLibraries REQUIRED CONFIG)
+add_library(xrt-external-vulkan-utility INTERFACE)
+target_link_libraries(xrt-external-vulkan-utility INTERFACE Vulkan::UtilityHeaders)
