@@ -27,7 +27,9 @@
 #include "target_builder_helpers.h"
 #include "target_builder_interface.h"
 
+#ifdef XRT_BUILD_DRIVER_SIMULATED
 #include "simulated/simulated_interface.h"
+#endif
 
 #ifdef XRT_HAVE_OPENCV
 #include "tracking/t_tracking.h"
@@ -344,8 +346,17 @@ rgb_open_system_impl(struct xrt_builder *xb,
 		}
 #endif
 	} else {
+#ifdef XRT_BUILD_DRIVER_SIMULATED
 		const struct xrt_pose center = XRT_POSE_IDENTITY;
 		head = simulated_hmd_create(SIMULATED_MOVEMENT_WOBBLE, &center);
+#else
+		U_LOG_E("Could not create a real HMD and the simulated driver is disabled");
+		xret = xrt_prober_unlock_list(xp, &xpdevs);
+		if (xret != XRT_SUCCESS) {
+			return xret;
+		}
+		return XRT_ERROR_DEVICE_CREATION_FAILED;
+#endif
 	}
 
 #ifdef XRT_BUILD_DRIVER_PSMV

@@ -30,9 +30,12 @@ target_link_libraries(
 		st_gui
 		base
 		drv_includes
-		drv_simulated
 		target_helpers
 	)
+
+if(XRT_BUILD_DRIVER_SIMULATED)
+	target_link_libraries(sdl-test PRIVATE drv_simulated)
+endif()
 
 if(WIN32)
 	# For UTF-8 in sdl_program.cpp, MSVC defaults to UTF-16.
