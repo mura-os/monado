@@ -45,6 +45,27 @@ struct comp_window_wayland
 	struct xdg_toplevel *xdg_toplevel;
 
 	bool fullscreen_requested;
+
+	/*!
+	 * The size the last xdg_toplevel.configure asked for, applied when
+	 * its xdg_surface.configure arrives; 0x0 means "your choice".
+	 */
+	VkExtent2D configured;
+
+	/*!
+	 * A configure that needs the swapchain re-created is acknowledged
+	 * only once images of the new size exist, so the buffer that
+	 * follows the ack is the one the configure asked for (xdg-shell:
+	 * the ack belongs to the commit that applies the state). Until then
+	 * the serial waits here.
+	 */
+	bool ack_pending;
+	uint32_t ack_serial;
+
+	//! The base target's create_images, chained to acknowledge a deferred configure.
+	void (*base_create_images)(struct comp_target *ct,
+	                           const struct comp_target_create_images_info *create_info,
+	                           struct vk_bundle_queue *present_queue);
 };
 
 
@@ -81,8 +102,13 @@ comp_window_wayland_create_surface(struct comp_window_wayland *w, VkSurfaceKHR *
 static void
 comp_window_wayland_flush(struct comp_target *ct);
 
+static bool
+comp_window_wayland_configure(struct comp_window_wayland *w, uint32_t width, uint32_t height);
+
 static void
-comp_window_wayland_configure(struct comp_window_wayland *w, int32_t width, int32_t height);
+comp_window_wayland_create_images(struct comp_target *ct,
+                                  const struct comp_target_create_images_info *create_info,
+                                  struct vk_bundle_queue *present_queue);
 
 
 /*
@@ -113,6 +139,10 @@ comp_window_wayland_create(struct comp_compositor *c)
 	w->base.base.init_post_vulkan = comp_window_wayland_init_swapchain;
 	w->base.base.set_title = comp_window_wayland_update_window_title;
 	w->base.base.c = c;
+
+	// Chain create_images so a deferred configure is acknowledged with its images.
+	w->base_create_images = w->base.base.create_images;
+	w->base.base.create_images = comp_window_wayland_create_images;
 
 	return &w->base.base;
 }
@@ -166,7 +196,25 @@ comp_window_wayland_fullscreen(struct comp_window_wayland *w)
 static void
 _xdg_surface_configure_cb(void *data, struct xdg_surface *surface, uint32_t serial)
 {
-	xdg_surface_ack_configure(surface, serial);
+	struct comp_window_wayland *w = (struct comp_window_wayland *)data;
+
+	/*
+	 * The compositor's size for us is known now (the toplevel configure
+	 * precedes this event). Apply it, and if that means new images, hold
+	 * the ack until they exist — the renderer may already have acquired
+	 * an image of the old size for the next frame, and acknowledging
+	 * before that frame is presented would tell the compositor the old
+	 * buffer is the new state.
+	 */
+	bool recreate = comp_window_wayland_configure(w, w->configured.width, w->configured.height);
+	if (recreate) {
+		w->ack_pending = true;
+		w->ack_serial = serial;
+	} else {
+		// Acknowledging a serial acknowledges every earlier one too.
+		xdg_surface_ack_configure(surface, serial);
+		w->ack_pending = false;
+	}
 }
 
 static void
@@ -174,7 +222,8 @@ _xdg_toplevel_configure_cb(
     void *data, struct xdg_toplevel *toplevel, int32_t width, int32_t height, struct wl_array *states)
 {
 	struct comp_window_wayland *w = (struct comp_window_wayland *)data;
-	comp_window_wayland_configure(w, width, height);
+	w->configured.width = width > 0 ? (uint32_t)width : 0;
+	w->configured.height = height > 0 ? (uint32_t)height : 0;
 }
 
 static const struct xdg_surface_listener xdg_surface_listener = {
@@ -218,8 +267,8 @@ comp_window_wayland_init_swapchain(struct comp_target *ct, uint32_t width, uint3
 		return false;
 	}
 
-	xdg_toplevel_set_min_size(w_wayland->xdg_toplevel, width, height);
-	xdg_toplevel_set_max_size(w_wayland->xdg_toplevel, width, height);
+	// The window is resizable: configure sizes are applied by
+	// comp_window_wayland_configure, so no min/max pin here.
 
 	return true;
 }
@@ -348,16 +397,59 @@ comp_window_wayland_init(struct comp_target *ct)
 
 	wl_surface_commit(w_wayland->surface);
 
+	/*
+	 * Wait for the initial configure so a size the compositor picks
+	 * for us (maximized, fullscreen, tiled) is known before the
+	 * swapchain is created, instead of creating it at the preferred
+	 * size and re-creating it on the first frame.
+	 */
+	wl_display_roundtrip(w_wayland->display);
+
 	return true;
 }
 
-static void
-comp_window_wayland_configure(struct comp_window_wayland *w, int32_t width, int32_t height)
+/*!
+ * Apply a configured size. Returns true when a swapchain exists and will be
+ * re-created for it, i.e. when the ack should wait for the new images.
+ */
+static bool
+comp_window_wayland_configure(struct comp_window_wayland *w, uint32_t width, uint32_t height)
 {
 	if (w->base.base.c->settings.fullscreen && !w->fullscreen_requested) {
 		COMP_DEBUG(w->base.base.c, "Setting full screen");
 		comp_window_wayland_fullscreen(w);
 		w->fullscreen_requested = true;
+	}
+
+	/*
+	 * A size of 0x0 means the compositor lets us choose, keep the
+	 * compositor's preferred extents in that case. Otherwise use what
+	 * we were given: the Wayland WSI never reports OUT_OF_DATE for a
+	 * window-system resize, the surface is whatever size we make it.
+	 */
+	if (width == 0 || height == 0) {
+		return false;
+	}
+
+	VkExtent2D extent = {width, height};
+	comp_target_swapchain_override_extents(&w->base, extent);
+
+	return w->base.override.recreate_pending;
+}
+
+static void
+comp_window_wayland_create_images(struct comp_target *ct,
+                                  const struct comp_target_create_images_info *create_info,
+                                  struct vk_bundle_queue *present_queue)
+{
+	struct comp_window_wayland *w = (struct comp_window_wayland *)ct;
+
+	w->base_create_images(ct, create_info, present_queue);
+
+	// Images of the configured size exist now, the next present is that state.
+	if (w->ack_pending && w->base.swapchain.handle != VK_NULL_HANDLE) {
+		xdg_surface_ack_configure(w->xdg_surface, w->ack_serial);
+		w->ack_pending = false;
 	}
 }
 

@@ -954,6 +954,13 @@ comp_target_swapchain_acquire_next_image(struct comp_target *ct, uint32_t *out_i
 		return VK_ERROR_INITIALIZATION_FAILED;
 	}
 
+	// The window system resized us (see comp_target_swapchain_override_extents);
+	// report it the way the WSI would so the renderer re-creates the images.
+	if (cts->override.recreate_pending) {
+		cts->override.recreate_pending = false;
+		return VK_ERROR_OUT_OF_DATE_KHR;
+	}
+
 #ifdef VK_KHR_shared_presentable_image
 	const bool is_shared_presentable = is_shared_presentable_image(cts);
 
@@ -1242,6 +1249,14 @@ comp_target_swapchain_override_extents(struct comp_target_swapchain *cts, VkExte
 	    old.width,                                                              //
 	    old.height,                                                             //
 	    cts->override.compositor_extent ? "true" : "false");                    //
+
+	// A resize of a live swapchain: re-create it on the next acquire. Repeated
+	// calls before that acquire coalesce into one re-creation; a size the
+	// current images already have needs none.
+	if (cts->swapchain.handle != VK_NULL_HANDLE) {
+		cts->override.recreate_pending =
+		    cts->base.width != extent.width || cts->base.height != extent.height;
+	}
 
 	cts->override.compositor_extent = true;
 	cts->override.extent = extent;

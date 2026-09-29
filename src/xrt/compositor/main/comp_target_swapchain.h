@@ -61,6 +61,16 @@ struct comp_target_swapchain
 		 * see @p ignore_compositor_extent above.
 		 */
 		VkExtent2D extent;
+
+		/*!
+		 * Set when the extents changed after the swapchain was created,
+		 * for targets whose surface size is decided by the client (the
+		 * Wayland WSI never reports VK_ERROR_OUT_OF_DATE_KHR for a
+		 * window-system resize). The next acquire returns
+		 * VK_ERROR_OUT_OF_DATE_KHR once so the renderer re-creates the
+		 * images at the new size, see @ref comp_target_swapchain_override_extents.
+		 */
+		bool recreate_pending;
 	} override;
 
 	struct
@@ -167,6 +177,9 @@ comp_target_swapchain_init_and_set_fnptrs(struct comp_target_swapchain *cts,
 /*!
  * Set that any size from the compositor should be ignored and that given size
  * must be used for the @p VkSwapchain the helper code creates.
+ *
+ * May be called again after the swapchain exists (a window-system resize):
+ * a changed extent marks the swapchain for re-creation on the next acquire.
  *
  * @protected @memberof comp_target_swapchain
  *
