@@ -26,7 +26,7 @@ extern "C" {
 //! Major version of the API.
 #define MND_API_VERSION_MAJOR 1
 //! Minor version of the API.
-#define MND_API_VERSION_MINOR 8
+#define MND_API_VERSION_MINOR 9
 //! Patch version of the API.
 #define MND_API_VERSION_PATCH 0
 
@@ -49,6 +49,8 @@ typedef enum mnd_result
 	MND_ERROR_INVALID_OPERATION = -7,
 	//! Supported in version 1.5 and above.
 	MND_ERROR_UNSUPPORTED_OPERATION = -8,
+	//! Supported in version 1.9 and above: the connection does not hold the controller lease.
+	MND_ERROR_NOT_CONTROLLER = -9,
 } mnd_result_t;
 
 /*!
@@ -191,6 +193,37 @@ typedef enum mnd_view_type
 	MND_VIEW_TYPE_QUAD = 3,
 } mnd_view_type_t;
 
+/*!
+ * Which service socket a root connects to. The socket decides the connection's
+ * role in the service: only connections on the control socket can hold the
+ * controller lease, and only the lease holder may change client state
+ * (primary, focus, io blocks, view configuration).
+ *
+ * Supported in version 1.9.0 and above.
+ */
+typedef enum mnd_socket
+{
+	//! The application socket every OpenXR client uses.
+	MND_SOCKET_APP = 0,
+	//! The control socket for the session's controller (a shell or `monado-ctl`).
+	MND_SOCKET_CONTROL = 1,
+} mnd_socket_t;
+
+/*!
+ * This connection's standing with the controller lease.
+ *
+ * Supported in version 1.9.0 and above.
+ */
+typedef enum mnd_controller_state
+{
+	//! Not a controller: control calls fail with @ref MND_ERROR_NOT_CONTROLLER.
+	MND_CONTROLLER_STATE_NONE = 0,
+	//! Holds the lease: control calls succeed.
+	MND_CONTROLLER_STATE_HOLDER = 1,
+	//! Connected on the control socket while another controller holds the lease; promoted when it disconnects.
+	MND_CONTROLLER_STATE_PENDING = 2,
+} mnd_controller_state_t;
+
 #define MND_MAX_VIEWS 4
 
 /*!
@@ -257,6 +290,34 @@ mnd_api_get_version(uint32_t *out_major, uint32_t *out_minor, uint32_t *out_patc
  */
 mnd_result_t
 mnd_root_create(mnd_root_t **out_root);
+
+/*!
+ * Create libmonado state and connect to the given service socket.
+ *
+ * @ref mnd_root_create is equivalent to passing @ref MND_SOCKET_APP. A root on
+ * @ref MND_SOCKET_CONTROL takes the controller lease if it is free, otherwise
+ * queues behind the holder; see @ref mnd_root_get_controller_state.
+ *
+ * Supported in version 1.9.0 and above.
+ *
+ * @param      socket   Which socket to connect to.
+ * @param[out] out_root Address to populate with the opaque state type.
+ * @return MND_SUCCESS on success
+ */
+mnd_result_t
+mnd_root_create_with_socket(mnd_socket_t socket, mnd_root_t **out_root);
+
+/*!
+ * Where this connection stands with the controller lease.
+ *
+ * Supported in version 1.9.0 and above.
+ *
+ * @param      root      The libmonado state.
+ * @param[out] out_state The state, must be a valid pointer.
+ * @return MND_SUCCESS on success
+ */
+mnd_result_t
+mnd_root_get_controller_state(mnd_root_t *root, mnd_controller_state_t *out_state);
 
 /*!
  * Destroy libmonado state, disconnecting from the service, and zeroing the

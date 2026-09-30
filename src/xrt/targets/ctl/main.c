@@ -15,6 +15,7 @@
 
 #include "ipc_client_generated.h"
 #include "xrt/xrt_results.h"
+#include "xrt/xrt_config_build.h"
 
 #include <getopt.h>
 #include <ctype.h>
@@ -48,6 +49,39 @@ struct full_device_info
  * Helper functions.
  *
  */
+
+static const char *
+role_str(enum ipc_client_role role)
+{
+	switch (role) {
+	case IPC_CLIENT_ROLE_APP: return "app";
+	case IPC_CLIENT_ROLE_CONTROLLER: return "controller";
+	case IPC_CLIENT_ROLE_SANDBOXED_APP: return "sandboxed";
+	default: return "?";
+	}
+}
+
+static const char *
+controller_state_str(enum ipc_controller_state state)
+{
+	switch (state) {
+	case IPC_CONTROLLER_STATE_HOLDER: return "holder";
+	case IPC_CONTROLLER_STATE_PENDING: return "pending";
+	case IPC_CONTROLLER_STATE_NONE: return "none";
+	default: return "?";
+	}
+}
+
+static void
+print_control_error(xrt_result_t r, const char *what, int client_id)
+{
+	if (r == XRT_ERROR_IPC_NOT_CONTROLLER) {
+		PE("Failed to %s %d: this connection does not hold the controller lease.\n", what, client_id);
+		PE("Connect on the control socket (--socket=control) while no other controller is connected.\n");
+	} else {
+		PE("Failed to %s %d.\n", what, client_id);
+	}
+}
 
 /*!
  * Get the device list from a given connection.
@@ -85,6 +119,14 @@ get_mode(struct ipc_connection *ipc_c)
 
 	xrt_result_t r;
 
+	enum ipc_controller_state state = IPC_CONTROLLER_STATE_NONE;
+	r = ipc_call_system_get_controller_state(ipc_c, &state);
+	if (r != XRT_SUCCESS) {
+		PE("Failed to get controller state.\n");
+		exit(1);
+	}
+	P("Controller: %s\n\n", controller_state_str(state));
+
 	r = ipc_call_system_get_clients(ipc_c, &clients);
 	if (r != XRT_SUCCESS) {
 		PE("Failed to get client list.\n");
@@ -113,6 +155,7 @@ get_mode(struct ipc_connection *ipc_c)
 		  "\tovly: %d"
 		  "\tz: %d"
 		  "\tpid: %d"
+		  "\trole: %s"
 		  "\t%s\n",
 		  clients.ids[i],                    //
 		  cs.session_active,                 //
@@ -125,6 +168,7 @@ get_mode(struct ipc_connection *ipc_c)
 		  cs.session_overlay,                //
 		  cs.z_order,                        //
 		  cs.pid,                            //
+		  role_str(cs.role),                 //
 		  cs.info.application_name);
 	}
 
@@ -155,7 +199,7 @@ set_primary(struct ipc_connection *ipc_c, int client_id)
 
 	r = ipc_call_system_set_primary_client(ipc_c, client_id);
 	if (r != XRT_SUCCESS) {
-		PE("Failed to set active client to %d.\n", client_id);
+		print_control_error(r, "set active client", client_id);
 		return 1;
 	}
 
@@ -169,7 +213,7 @@ set_focused(struct ipc_connection *ipc_c, int client_id)
 
 	r = ipc_call_system_set_focused_client(ipc_c, client_id);
 	if (r != XRT_SUCCESS) {
-		PE("Failed to set focused client to %d.\n", client_id);
+		print_control_error(r, "set focused client", client_id);
 		return 1;
 	}
 
@@ -183,7 +227,7 @@ toggle_io(struct ipc_connection *ipc_c, int client_id)
 
 	r = ipc_call_system_toggle_io_client(ipc_c, client_id);
 	if (r != XRT_SUCCESS) {
-		PE("Failed to toggle io for client %d.\n", client_id);
+		print_control_error(r, "toggle io for client", client_id);
 		return 1;
 	}
 
@@ -305,7 +349,22 @@ enum LongOptions
 	OPTION_DEVICE = 1,
 	OPTION_GET_BRIGHTNESS,
 	OPTION_SET_BRIGHTNESS,
+	OPTION_SOCKET,
 };
+
+static void
+print_usage(void)
+{
+	PE("    -c: Recenter local spaces\n");
+	PE("    -f <id>: Set focused client\n");
+	PE("    -p <id>: Set primary client\n");
+	PE("    -i <id>: Toggle whether client receives input\n");
+	PE("    --device <id>: Set device for subsequent command, otherwise defaults to the "
+	   "primary device\n");
+	PE("    --get-brightness: Get current display brightness in percent\n");
+	PE("    --set-brightness <[+-]brightness[%%]>: Set display brightness\n");
+	PE("    --socket <app|control>: Which service socket to connect to (default: control)\n");
+}
 
 int
 main(int argc, char *argv[])
@@ -317,11 +376,14 @@ main(int argc, char *argv[])
 	int s_val = 0;
 	int device_val = -1;
 	char *brightness;
+	// Control verbs are the controller's, so that is the default socket.
+	const char *socket_name = XRT_IPC_MSG_SOCK_CONTROL_FILENAME;
 
 	static struct option long_options[] = {
 	    {"device", required_argument, NULL, OPTION_DEVICE},
 	    {"get-brightness", no_argument, NULL, OPTION_GET_BRIGHTNESS},
 	    {"set-brightness", required_argument, NULL, OPTION_SET_BRIGHTNESS},
+	    {"socket", required_argument, NULL, OPTION_SOCKET},
 	    {NULL, 0, NULL, 0},
 	};
 
@@ -355,19 +417,23 @@ main(int argc, char *argv[])
 			op_mode = MODE_SET_BRIGHTNESS;
 			break;
 		}
+		case OPTION_SOCKET: {
+			if (strcmp(optarg, "app") == 0) {
+				socket_name = NULL; // The default application socket.
+			} else if (strcmp(optarg, "control") == 0) {
+				socket_name = XRT_IPC_MSG_SOCK_CONTROL_FILENAME;
+			} else {
+				PE("Unknown socket '%s', expected app or control.\n", optarg);
+				exit(1);
+			}
+			break;
+		}
 		case '?':
 			if (optopt == 's') {
 				PE("Option -s requires an id to set.\n");
 			} else if (isprint(optopt)) {
 				PE("Option `-%c' unknown. Usage:\n", optopt);
-				PE("    -c: Recenter local spaces\n");
-				PE("    -f <id>: Set focused client\n");
-				PE("    -p <id>: Set primary client\n");
-				PE("    -i <id>: Toggle whether client receives input\n");
-				PE("    --device <id>: Set device for subsequent command, otherwise defaults to the "
-				   "primary device\n");
-				PE("    --get-brightness: Get current display brightness in percent\n");
-				PE("    --set-brightness <[+-]brightness[%%]>: Set display brightness\n");
+				print_usage();
 			} else {
 				PE("Option `\\x%x' unknown.\n", optopt);
 			}
@@ -381,6 +447,7 @@ main(int argc, char *argv[])
 
 	struct xrt_instance_info info = {
 	    .app_info.application_name = "monado-ctl",
+	    .ipc_socket_name = socket_name,
 	};
 
 	xrt_result_t xret = ipc_client_connection_init(&ipc_c, U_LOGGING_INFO, &info);

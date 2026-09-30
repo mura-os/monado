@@ -208,7 +208,7 @@ ipc_client_socket_connect(struct ipc_connection *ipc_c)
 #else
 
 static bool
-ipc_client_socket_connect(struct ipc_connection *ipc_c)
+ipc_client_socket_connect(struct ipc_connection *ipc_c, const char *socket_name)
 {
 #ifdef SOCK_CLOEXEC
 	// Make sure the socket is not inherited by child processes. For one, when there is an fd to the socket
@@ -221,6 +221,9 @@ ipc_client_socket_connect(struct ipc_connection *ipc_c)
 	struct sockaddr_un addr = XRT_STRUCT_INIT;
 	int ret;
 
+	if (socket_name == NULL) {
+		socket_name = XRT_IPC_MSG_SOCK_FILENAME;
+	}
 
 	// create our IPC socket
 
@@ -234,7 +237,7 @@ ipc_client_socket_connect(struct ipc_connection *ipc_c)
 
 	char sock_file[PATH_MAX];
 
-	ssize_t size = u_file_get_path_in_runtime_dir(XRT_IPC_MSG_SOCK_FILENAME, sock_file, PATH_MAX);
+	ssize_t size = u_file_get_path_in_runtime_dir(socket_name, sock_file, PATH_MAX);
 	if (size == -1) {
 		IPC_ERROR(ipc_c, "Could not get socket file name");
 		return false;
@@ -380,8 +383,10 @@ ipc_client_connection_init(struct ipc_connection *ipc_c,
 	void *context = i_info->platform_info.context;
 
 	if (!ipc_client_socket_connect(ipc_c, vm, context)) {
-#else
+#elif defined(XRT_OS_WINDOWS)
 	if (!ipc_client_socket_connect(ipc_c)) {
+#else
+	if (!ipc_client_socket_connect(ipc_c, i_info->ipc_socket_name)) {
 #endif
 		IPC_ERROR(ipc_c,
 		          "Failed to connect to monado service process\n\n"

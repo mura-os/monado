@@ -226,12 +226,26 @@ mnd_api_get_version(uint32_t *out_major, uint32_t *out_minor, uint32_t *out_patc
 mnd_result_t
 mnd_root_create(mnd_root_t **out_root)
 {
+	return mnd_root_create_with_socket(MND_SOCKET_APP, out_root);
+}
+
+mnd_result_t
+mnd_root_create_with_socket(mnd_socket_t socket, mnd_root_t **out_root)
+{
 	CHECK_NOT_NULL(out_root);
+
+	const char *socket_name = NULL;
+	switch (socket) {
+	case MND_SOCKET_APP: socket_name = NULL; break;
+	case MND_SOCKET_CONTROL: socket_name = XRT_IPC_MSG_SOCK_CONTROL_FILENAME; break;
+	default: PE("Invalid socket %d.\n", (int)socket); return MND_ERROR_INVALID_VALUE;
+	}
 
 	mnd_root_t *r = U_TYPED_CALLOC(mnd_root_t);
 
 	struct xrt_instance_info info = {0};
 	info.app_info.immediate_disconnect = true;
+	info.ipc_socket_name = socket_name;
 	snprintf(info.app_info.application_name, sizeof(info.app_info.application_name), "%s", "libmonado");
 
 	xrt_result_t xret = ipc_client_connection_init(&r->ipc_c, U_LOGGING_INFO, &info);
@@ -342,6 +356,46 @@ mnd_root_get_client_name(mnd_root_t *root, uint32_t client_id, const char **out_
 }
 
 mnd_result_t
+mnd_root_get_controller_state(mnd_root_t *root, mnd_controller_state_t *out_state)
+{
+	CHECK_NOT_NULL(root);
+	CHECK_NOT_NULL(out_state);
+
+	enum ipc_controller_state state = IPC_CONTROLLER_STATE_NONE;
+	xrt_result_t r = ipc_call_system_get_controller_state(&root->ipc_c, &state);
+	if (r != XRT_SUCCESS) {
+		PE("Failed to get controller state.\n");
+		return MND_ERROR_OPERATION_FAILED;
+	}
+
+	switch (state) {
+	case IPC_CONTROLLER_STATE_HOLDER: *out_state = MND_CONTROLLER_STATE_HOLDER; break;
+	case IPC_CONTROLLER_STATE_PENDING: *out_state = MND_CONTROLLER_STATE_PENDING; break;
+	default: *out_state = MND_CONTROLLER_STATE_NONE; break;
+	}
+
+	return MND_SUCCESS;
+}
+
+/*!
+ * Map a control verb's result: the lease refusal is its own error so callers
+ * can tell "not allowed" from "failed".
+ */
+static mnd_result_t
+control_result(xrt_result_t r, const char *what, uint32_t client_id)
+{
+	if (r == XRT_SUCCESS) {
+		return MND_SUCCESS;
+	}
+	if (r == XRT_ERROR_IPC_NOT_CONTROLLER) {
+		PE("Not the controller, refused to %s for client id: %u.\n", what, client_id);
+		return MND_ERROR_NOT_CONTROLLER;
+	}
+	PE("Failed to %s for client id: %u.\n", what, client_id);
+	return MND_ERROR_OPERATION_FAILED;
+}
+
+mnd_result_t
 mnd_root_get_client_state(mnd_root_t *root, uint32_t client_id, uint32_t *out_flags)
 {
 	CHECK_NOT_NULL(root);
@@ -379,12 +433,7 @@ mnd_root_set_client_primary(mnd_root_t *root, uint32_t client_id)
 	CHECK_CLIENT_ID(client_id);
 
 	xrt_result_t r = ipc_call_system_set_primary_client(&root->ipc_c, client_id);
-	if (r != XRT_SUCCESS) {
-		PE("Failed to set primary to client id: %u.\n", client_id);
-		return MND_ERROR_OPERATION_FAILED;
-	}
-
-	return MND_SUCCESS;
+	return control_result(r, "set primary", client_id);
 }
 
 mnd_result_t
@@ -394,12 +443,7 @@ mnd_root_set_client_focused(mnd_root_t *root, uint32_t client_id)
 	CHECK_CLIENT_ID(client_id);
 
 	xrt_result_t r = ipc_call_system_set_focused_client(&root->ipc_c, client_id);
-	if (r != XRT_SUCCESS) {
-		PE("Failed to set focused to client id: %u.\n", client_id);
-		return MND_ERROR_OPERATION_FAILED;
-	}
-
-	return MND_SUCCESS;
+	return control_result(r, "set focused", client_id);
 }
 
 mnd_result_t
@@ -409,12 +453,7 @@ mnd_root_toggle_client_io_active(mnd_root_t *root, uint32_t client_id)
 	CHECK_CLIENT_ID(client_id);
 
 	xrt_result_t r = ipc_call_system_toggle_io_client(&root->ipc_c, client_id);
-	if (r != XRT_SUCCESS) {
-		PE("Failed to toggle io for client id: %u.\n", client_id);
-		return MND_ERROR_OPERATION_FAILED;
-	}
-
-	return MND_SUCCESS;
+	return control_result(r, "toggle io", client_id);
 }
 
 mnd_result_t
@@ -429,12 +468,7 @@ mnd_root_set_client_io_blocks(mnd_root_t *root, uint32_t client_id, mnd_io_block
 	blocks.block_inputs = block_flags & MND_IO_BLOCK_INPUTS;
 	blocks.block_outputs = block_flags & MND_IO_BLOCK_OUTPUTS;
 	xrt_result_t r = ipc_call_system_set_client_io_blocks(&root->ipc_c, client_id, &blocks);
-	if (r != XRT_SUCCESS) {
-		PE("Failed to set io blocks for client id: %u.\n", client_id);
-		return MND_ERROR_OPERATION_FAILED;
-	}
-
-	return MND_SUCCESS;
+	return control_result(r, "set io blocks", client_id);
 }
 
 mnd_result_t
@@ -566,12 +600,7 @@ mnd_root_set_client_recommended_view_config(mnd_root_t *root,
 	    client_id,                                                       //
 	    view_type,                                                       //
 	    &xrt_view_config);                                               //
-	if (r != XRT_SUCCESS) {
-		PE("Failed to set recommended view config for client id: %u.\n", client_id);
-		return MND_ERROR_OPERATION_FAILED;
-	}
-
-	return MND_SUCCESS;
+	return control_result(r, "set recommended view config", client_id);
 }
 
 mnd_result_t

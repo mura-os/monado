@@ -101,6 +101,14 @@ struct xrt_instance_info
 
 	//! Process-specific, platform-specific data.
 	struct xrt_platform_info platform_info;
+
+	/*!
+	 * Name of the service socket to connect to, relative to the runtime
+	 * directory; NULL means the default application socket. Only the IPC
+	 * client target reads this. Which socket a client arrives on decides
+	 * its role in the service (see @ref ipc_client_role).
+	 */
+	const char *ipc_socket_name;
 };
 
 /*!
