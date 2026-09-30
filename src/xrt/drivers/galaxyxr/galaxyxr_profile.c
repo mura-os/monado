@@ -336,8 +336,8 @@ finish_eye_v2(struct galaxyxr_profile_eye *eye, struct parse_eye_v2 *v2, const s
 		}
 	}
 
-	const float *fovv = v2->fov_verified_have == 4 ? v2->fov_verified
-	                                               : (v2->fov_green_have == 4 ? v2->fov_green : NULL);
+	const float *fovv =
+	    v2->fov_verified_have == 4 ? v2->fov_verified : (v2->fov_green_have == 4 ? v2->fov_green : NULL);
 	if (fovv != NULL) {
 		fov_from_radians(eye, fovv);
 	}
@@ -418,7 +418,7 @@ galaxyxr_profile_load(struct galaxyxr_profile_eye out_eyes[2], const char *path)
 	struct parse_cell cell = {0};
 	int ext_depth = 0; // sensor_extrinsics / lut_frame_t_eye subtree depth
 	struct parse_ext *ext = NULL;
-	int ext_vec = 0; // 1 = in p, 2 = in q
+	int ext_vec = 0;   // 1 = in p, 2 = in q
 	int fov_block = 0; // 1 = green_fov, 2 = verified_fov
 	float rows = 0, cols = 0, step = 0, dist = 0;
 	float fovv[4] = {0};
@@ -455,13 +455,11 @@ galaxyxr_profile_load(struct galaxyxr_profile_eye out_eyes[2], const char *path)
 			} else if (strncmp(t, "frame_id: IMU_0", 15) == 0) {
 				ext->from_imu = true;
 			} else if (key_string(t, "sensor_id", ext->id, sizeof(ext->id))) {
-			} else if (ext_vec == 1 &&
-			           (key_value(t, "x", &ext->p[0]) || key_value(t, "y", &ext->p[1]) ||
-			            key_value(t, "z", &ext->p[2]))) {
+			} else if (ext_vec == 1 && (key_value(t, "x", &ext->p[0]) || key_value(t, "y", &ext->p[1]) ||
+			                            key_value(t, "z", &ext->p[2]))) {
 				ext->have_p++;
-			} else if (ext_vec == 2 &&
-			           (key_value(t, "w", &ext->q[0]) || key_value(t, "x", &ext->q[1]) ||
-			            key_value(t, "y", &ext->q[2]) || key_value(t, "z", &ext->q[3]))) {
+			} else if (ext_vec == 2 && (key_value(t, "w", &ext->q[0]) || key_value(t, "x", &ext->q[1]) ||
+			                            key_value(t, "y", &ext->q[2]) || key_value(t, "z", &ext->q[3]))) {
 				ext->have_q++;
 			}
 			continue;
@@ -530,8 +528,7 @@ galaxyxr_profile_load(struct galaxyxr_profile_eye out_eyes[2], const char *path)
 					eye->present = calloc(eye->rows * eye->cols, sizeof(bool));
 				} else {
 					for (uint32_t c = 0; c < 3; c++) {
-						v2eye->raw[c] =
-						    calloc(eye->rows * eye->cols, sizeof(struct xrt_vec3));
+						v2eye->raw[c] = calloc(eye->rows * eye->cols, sizeof(struct xrt_vec3));
 					}
 					v2eye->have = calloc(eye->rows * eye->cols, sizeof(bool));
 				}
@@ -735,10 +732,10 @@ galaxyxr_profile_load_imu_cal(struct galaxyxr_imu_cal *out_cal, const char *path
 		    (key_value(t, "x", &vec->x) || key_value(t, "y", &vec->y) || key_value(t, "z", &vec->z))) {
 			continue;
 		}
-		if (key_string(t, "id", id, sizeof(id)) ||                          //
-		    key_value(t, "gyro_noise_sigma", &cur.gyro_noise_sigma) ||      //
-		    key_value(t, "gyro_bias_sigma", &cur.gyro_bias_sigma) ||        //
-		    key_value(t, "accel_noise_sigma", &cur.accel_noise_sigma) ||    //
+		if (key_string(t, "id", id, sizeof(id)) ||                       //
+		    key_value(t, "gyro_noise_sigma", &cur.gyro_noise_sigma) ||   //
+		    key_value(t, "gyro_bias_sigma", &cur.gyro_bias_sigma) ||     //
+		    key_value(t, "accel_noise_sigma", &cur.accel_noise_sigma) || //
 		    key_value(t, "accel_bias_sigma", &cur.accel_bias_sigma)) {
 			continue;
 		}

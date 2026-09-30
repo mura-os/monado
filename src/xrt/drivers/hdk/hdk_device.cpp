@@ -167,14 +167,8 @@ hdk_device_update(struct hdk_device *hd)
 
 // Used to produce 90 degree rotations
 #define HDK_SIN_PI_OVER_4 0.7071068f
-	struct xrt_quat rot_90_about_x
-	{
-		HDK_SIN_PI_OVER_4, 0, 0, HDK_SIN_PI_OVER_4
-	};
-	struct xrt_quat negative_90_about_y
-	{
-		0, -HDK_SIN_PI_OVER_4, 0, HDK_SIN_PI_OVER_4
-	};
+	struct xrt_quat rot_90_about_x{HDK_SIN_PI_OVER_4, 0, 0, HDK_SIN_PI_OVER_4};
+	struct xrt_quat negative_90_about_y{0, -HDK_SIN_PI_OVER_4, 0, HDK_SIN_PI_OVER_4};
 	// The flipping of components and this get us close, except we are
 	// looking 90 to the right of where we want.
 	math_quat_rotate(&quat, &rot_90_about_x, &quat);
@@ -197,10 +191,7 @@ hdk_device_update(struct hdk_device *hd)
 	ang_vel_quat.w = 0;
 
 	// need the inverse rotation here
-	struct xrt_quat negative_90_about_x
-	{
-		- HDK_SIN_PI_OVER_4, 0, 0, HDK_SIN_PI_OVER_4
-	};
+	struct xrt_quat negative_90_about_x{-HDK_SIN_PI_OVER_4, 0, 0, HDK_SIN_PI_OVER_4};
 	math_quat_rotate(&ang_vel_quat, &rot_90_about_x, &ang_vel_quat);
 	math_quat_rotate(&negative_90_about_x, &ang_vel_quat, &ang_vel_quat);
 

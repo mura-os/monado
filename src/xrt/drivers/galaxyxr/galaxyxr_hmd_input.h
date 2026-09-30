@@ -38,9 +38,7 @@ struct galaxyxr_hmd_input
 };
 
 void
-galaxyxr_hmd_input_init(struct galaxyxr_hmd_input *input,
-                        struct xrt_device *xdev,
-                        enum u_logging_level *log_level);
+galaxyxr_hmd_input_init(struct galaxyxr_hmd_input *input, struct xrt_device *xdev, enum u_logging_level *log_level);
 
 xrt_result_t
 galaxyxr_hmd_input_update(struct galaxyxr_hmd_input *input);

@@ -1256,8 +1256,7 @@ comp_target_swapchain_override_extents(struct comp_target_swapchain *cts, VkExte
 	// calls before that acquire coalesce into one re-creation; a size the
 	// current images already have needs none.
 	if (cts->swapchain.handle != VK_NULL_HANDLE) {
-		cts->override.recreate_pending =
-		    cts->base.width != extent.width || cts->base.height != extent.height;
+		cts->override.recreate_pending = cts->base.width != extent.width || cts->base.height != extent.height;
 	}
 
 	cts->override.compositor_extent = true;

@@ -54,7 +54,7 @@ galaxyxr_open_system_impl(struct xrt_builder *xb,
                           struct xrt_tracking_origin *origin,
                           struct xrt_system_devices *xsysd,
                           struct xrt_frame_context *xfctx,
-                          struct t_builder_roles_helper *tbrh)
+                          struct t_builder_options *tbo)
 {
 	struct xrt_device *head = galaxyxr_hmd_create();
 	if (head == NULL) {
@@ -62,9 +62,9 @@ galaxyxr_open_system_impl(struct xrt_builder *xb,
 	}
 
 	xsysd->static_xdevs[xsysd->static_xdev_count++] = head;
-	tbrh->head = head;
+	tbo->head = head;
 	if (head->supported.eye_gaze) {
-		tbrh->eyes = head;
+		tbo->eyes = head;
 	}
 
 	return XRT_SUCCESS;

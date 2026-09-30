@@ -112,14 +112,14 @@ read_u32(const uint8_t **buffer, uint32_t *out_value)
 static inline void
 read_u64(const uint8_t **buffer, uint64_t *out_value)
 {
-	*out_value = ((uint64_t) * (*buffer + 0) << 0u) |  // Byte 0
-	             ((uint64_t) * (*buffer + 1) << 8u) |  // Byte 1
-	             ((uint64_t) * (*buffer + 2) << 16u) | // Byte 2
-	             ((uint64_t) * (*buffer + 3) << 24u) | // Byte 3
-	             ((uint64_t) * (*buffer + 4) << 32u) | // Byte 4
-	             ((uint64_t) * (*buffer + 5) << 40u) | // Byte 5
-	             ((uint64_t) * (*buffer + 6) << 48u) | // Byte 6
-	             ((uint64_t) * (*buffer + 7) << 56u);  // Byte 7
+	*out_value = ((uint64_t)*(*buffer + 0) << 0u) |  // Byte 0
+	             ((uint64_t)*(*buffer + 1) << 8u) |  // Byte 1
+	             ((uint64_t)*(*buffer + 2) << 16u) | // Byte 2
+	             ((uint64_t)*(*buffer + 3) << 24u) | // Byte 3
+	             ((uint64_t)*(*buffer + 4) << 32u) | // Byte 4
+	             ((uint64_t)*(*buffer + 5) << 40u) | // Byte 5
+	             ((uint64_t)*(*buffer + 6) << 48u) | // Byte 6
+	             ((uint64_t)*(*buffer + 7) << 56u);  // Byte 7
 	*buffer += 8;
 }
 

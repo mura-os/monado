@@ -107,10 +107,9 @@ import_nv12(struct comp_passthrough *p,
 		return VK_ERROR_FORMAT_NOT_SUPPORTED;
 	}
 	uint64_t luma_end = (uint64_t)frame->offsets[0] + (uint64_t)frame->strides[0] * frame->height;
-	uint64_t chroma_end =
-	    (uint64_t)frame->offsets[1] + (uint64_t)frame->strides[1] * ((frame->height + 1) / 2);
-	if (frame->strides[0] < frame->width || frame->strides[1] < frame->width ||
-	    luma_end > frame->buffer_size || chroma_end > frame->buffer_size) {
+	uint64_t chroma_end = (uint64_t)frame->offsets[1] + (uint64_t)frame->strides[1] * ((frame->height + 1) / 2);
+	if (frame->strides[0] < frame->width || frame->strides[1] < frame->width || luma_end > frame->buffer_size ||
+	    chroma_end > frame->buffer_size) {
 		CPT_ERROR(p, "passthrough: invalid NV12 plane geometry for %llu-byte buffer",
 		          (unsigned long long)frame->buffer_size);
 		return VK_ERROR_FORMAT_NOT_SUPPORTED;
@@ -244,8 +243,7 @@ update_frame_resources(struct comp_passthrough *p, const struct xrt_passthrough_
 	VkDescriptorImageInfo image_infos[XRT_MAX_VIEWS];
 	for (uint32_t view = 0; view < frame->view_count; view++) {
 		uint32_t slot = frame->views[view].slot;
-		if (slot >= XRT_PASSTHROUGH_MAX_SLOTS ||
-		    !xrt_graphics_buffer_is_valid(frame->views[view].handle)) {
+		if (slot >= XRT_PASSTHROUGH_MAX_SLOTS || !xrt_graphics_buffer_is_valid(frame->views[view].handle)) {
 			return false;
 		}
 		struct passthrough_import *import = &p->imports[view][slot];
@@ -595,11 +593,10 @@ create_vk_resources(struct comp_passthrough *p)
 		return false;
 	}
 
-	VkDeviceSize curve_size =
-	    sizeof(float) * XRT_PASSTHROUGH_CURVE_LUT_SIZE * p->provider->calibration.view_count;
-	ret = render_buffer_init(vk, &p->curve_buffer, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-	                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-	                         curve_size);
+	VkDeviceSize curve_size = sizeof(float) * XRT_PASSTHROUGH_CURVE_LUT_SIZE * p->provider->calibration.view_count;
+	ret =
+	    render_buffer_init(vk, &p->curve_buffer, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+	                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, curve_size);
 	if (ret != VK_SUCCESS) {
 		return false;
 	}
@@ -608,8 +605,7 @@ create_vk_resources(struct comp_passthrough *p)
 		return false;
 	}
 	for (uint32_t view = 0; view < p->provider->calibration.view_count; view++) {
-		memcpy((char *)p->curve_buffer.mapped +
-		           view * XRT_PASSTHROUGH_CURVE_LUT_SIZE * sizeof(float),
+		memcpy((char *)p->curve_buffer.mapped + view * XRT_PASSTHROUGH_CURVE_LUT_SIZE * sizeof(float),
 		       p->provider->calibration.views[view].curved_window_lut,
 		       XRT_PASSTHROUGH_CURVE_LUT_SIZE * sizeof(float));
 	}

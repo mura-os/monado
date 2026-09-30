@@ -283,10 +283,10 @@ walk_fovea(struct galaxyxr_foveation_view *v, const struct fovea_ctx *ctx, bool 
 	const int32_t w = (int32_t)v->width;
 	const int32_t h = (int32_t)v->height;
 
-	const float eps = 0.0026f; // tan(0.15 deg).
-	if (!force && v->walked_valid &&              //
-	    fabsf(ctx->gtx - v->walked_gtx) < eps &&  //
-	    fabsf(ctx->gty - v->walked_gty) < eps) {  //
+	const float eps = 0.0026f;                   // tan(0.15 deg).
+	if (!force && v->walked_valid &&             //
+	    fabsf(ctx->gtx - v->walked_gtx) < eps && //
+	    fabsf(ctx->gty - v->walked_gty) < eps) { //
 		return;
 	}
 	v->walked_gtx = ctx->gtx;
@@ -584,8 +584,8 @@ galaxyxr_foveation_fill_map(struct galaxyxr_foveation *f,
 	// Draw time stats: u_var mirrors plus a rare summary log line.
 	const uint64_t dur_ns = (uint64_t)(os_monotonic_get_ns() - start_ns);
 	f->draw_last_ms = (float)((double)dur_ns / (double)U_TIME_1MS_IN_NS);
-	f->draw_avg_ms = f->draw_avg_ms == 0.0f ? f->draw_last_ms
-	                                        : f->draw_avg_ms + 0.05f * (f->draw_last_ms - f->draw_avg_ms);
+	f->draw_avg_ms =
+	    f->draw_avg_ms == 0.0f ? f->draw_last_ms : f->draw_avg_ms + 0.05f * (f->draw_last_ms - f->draw_avg_ms);
 	f->draw_max_ms = f->draw_last_ms > f->draw_max_ms ? f->draw_last_ms : f->draw_max_ms;
 	f->window_ns_sum += dur_ns;
 	f->window_ns_max = dur_ns > f->window_ns_max ? dur_ns : f->window_ns_max;

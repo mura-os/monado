@@ -654,13 +654,13 @@ renderer_build_rendering_target_resources(struct comp_renderer *r,
 	    r->target_render_pass.foveation_mechanism != RENDER_FOVEATION_MECHANISM_NONE ? &r->foveation.map : NULL;
 
 	if (!render_gfx_target_resources_init( //
-	        rtr,                          //
-	        &c->nr,                       //
-	        &r->target_render_pass,       //
-	        foveation_map,                //
-	        image,                        //
-	        image_view,                   //
-	        extent)) {                    //
+	        rtr,                           //
+	        &c->nr,                        //
+	        &r->target_render_pass,        //
+	        foveation_map,                 //
+	        image,                         //
+	        image_view,                    //
+	        extent)) {                     //
 		COMP_ERROR(c, "render_gfx_target_resources_init: false");
 		return false;
 	}
@@ -1252,22 +1252,22 @@ dispatch_graphics(struct comp_renderer *r,
 	struct xrt_pose head_pose_scanout_begin;
 	struct xrt_pose head_pose_scanout_end;
 	enum xrt_scanout_direction scanout_direction = XRT_SCANOUT_DIRECTION_TOP_TO_BOTTOM;
-	calc_pose_data(                  //
-	    r,                           //
-	    fov_source,                  //
-	    fovs,                        //
-	    world_poses_scanout_begin,   //
-	    world_poses_scanout_end,     //
-	    eye_poses,                   //
-	    &head_pose_scanout_begin,    //
-	    &head_pose_scanout_end,      //
-	    &scanout_direction,          //
-	    render->r->view_count);      //
+	calc_pose_data(                //
+	    r,                         //
+	    fov_source,                //
+	    fovs,                      //
+	    world_poses_scanout_begin, //
+	    world_poses_scanout_end,   //
+	    eye_poses,                 //
+	    &head_pose_scanout_begin,  //
+	    &head_pose_scanout_end,    //
+	    &scanout_direction,        //
+	    render->r->view_count);    //
 	frame_state->data.scanout_direction = scanout_direction;
 
 #ifdef XRT_FEATURE_PASSTHROUGH_VIEW
-	bool passthrough_enabled = c->base.frame_params.passthrough_requested && frame_state->data.fast_path &&
-	                           c->nr.gfx.nlayer.enabled;
+	bool passthrough_enabled =
+	    c->base.frame_params.passthrough_requested && frame_state->data.fast_path && c->nr.gfx.nlayer.enabled;
 	comp_passthrough_prepare(c->passthrough, passthrough_enabled, frame_state->data.do_timewarp, eye_poses,
 	                         &head_pose_scanout_begin, &head_pose_scanout_end, render->r->view_count,
 	                         &frame_state->data.passthrough);
@@ -1490,8 +1490,7 @@ comp_renderer_draw(struct comp_renderer *r)
 	comp_compositor_get_dispatch_flags(c, &do_timewarp, &do_distortion, &do_cac);
 
 	// The alpha-blend passthrough-only fast path intentionally has no app layers.
-	assert(!fast_path || c->base.layer_accum.layer_count >= 1 ||
-	       c->base.frame_params.passthrough_requested);
+	assert(!fast_path || c->base.layer_accum.layer_count >= 1 || c->base.frame_params.passthrough_requested);
 
 	// For scratch image debugging.
 	struct chl_frame_state frame_state;

@@ -249,9 +249,8 @@ adapt_comp_time(struct gxr_pacer *p, struct gxr_pacer_frame *f, int64_t gpu_end_
 	}
 
 	if (p->comp_time_ns != before_ns) {
-		GXR_PACER_LOG_D("Adapted comp time %.2f -> %.2f ms (fence slack %.2f ms)",
-		                time_ns_to_ms_f(before_ns), time_ns_to_ms_f(p->comp_time_ns),
-		                time_ns_to_ms_f(slack_ns));
+		GXR_PACER_LOG_D("Adapted comp time %.2f -> %.2f ms (fence slack %.2f ms)", time_ns_to_ms_f(before_ns),
+		                time_ns_to_ms_f(p->comp_time_ns), time_ns_to_ms_f(slack_ns));
 	}
 }
 
@@ -376,8 +375,8 @@ comp_window_galaxyxr_pacer_create(const drmModeModeInfo *mode, struct u_pacing_c
 	GXR_PACER_LOG_I(
 	    "Created Galaxy XR pacer: period %.4f ms (%.3f Hz), scanout begins %.3f ms (%d lines) after the latch "
 	    "vsync, emission lag %.2f ms, wake lead %.2f ms",
-	    time_ns_to_ms_f(p->period_ns), 1e9 / (double)p->period_ns, time_ns_to_ms_f(p->scanout_begin_ns),
-	    lead_lines, p->emission_lag_ms.val, time_ns_to_ms_f(p->comp_time_ns));
+	    time_ns_to_ms_f(p->period_ns), 1e9 / (double)p->period_ns, time_ns_to_ms_f(p->scanout_begin_ns), lead_lines,
+	    p->emission_lag_ms.val, time_ns_to_ms_f(p->comp_time_ns));
 
 	*out_upc = &p->base;
 

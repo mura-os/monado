@@ -237,8 +237,8 @@ sample_cb(void *ud, const struct galaxyxr_ssc_sample *sample)
 		}
 		os_mutex_unlock(&hmd->mutex);
 		if (log && hmd->profile[0].ipd_mm > 0.0f && fabsf(mm - hmd->profile[0].ipd_mm) > 1.0f) {
-			GXR_INFO(hmd, "IPD sensor: %.2f mm (L %.1f R %.1f um), display calibrated at %.0f mm",
-			         mm, sample->v[0], sample->v[1], hmd->profile[0].ipd_mm);
+			GXR_INFO(hmd, "IPD sensor: %.2f mm (L %.1f R %.1f um), display calibrated at %.0f mm", mm,
+			         sample->v[0], sample->v[1], hmd->profile[0].ipd_mm);
 		} else if (log) {
 			GXR_INFO(hmd, "IPD sensor: %.2f mm (L %.1f R %.1f um)", mm, sample->v[0], sample->v[1]);
 		}
@@ -253,8 +253,8 @@ sample_cb(void *ud, const struct galaxyxr_ssc_sample *sample)
 	if (sample->type == GALAXYXR_SSC_GYRO_CAL) {
 		// Only ever touched from this thread; the pose queries never read it.
 		hmd->gyro_bias = (struct xrt_vec3){sample->v[0], sample->v[1], sample->v[2]};
-		GXR_INFO(hmd, "SSC gyro bias estimate: (%+.2f, %+.2f, %+.2f) mrad/s",
-		         sample->v[0] * 1000.0f, sample->v[1] * 1000.0f, sample->v[2] * 1000.0f);
+		GXR_INFO(hmd, "SSC gyro bias estimate: (%+.2f, %+.2f, %+.2f) mrad/s", sample->v[0] * 1000.0f,
+		         sample->v[1] * 1000.0f, sample->v[2] * 1000.0f);
 		return;
 	}
 
@@ -462,7 +462,8 @@ sensor_thread_fn(void *ptr)
 				}
 				if (!healthy && power_watched) {
 					if (epoll_ctl(epoll_fd, EPOLL_CTL_DEL, power_fd, NULL) < 0 && errno != ENOENT) {
-						GXR_ERROR(hmd, "Could not remove power button from sensor epoll: %s", strerror(errno));
+						GXR_ERROR(hmd, "Could not remove power button from sensor epoll: %s",
+						          strerror(errno));
 						goto out;
 					}
 					power_watched = false;
@@ -641,8 +642,8 @@ galaxyxr_hmd_get_head_relation(struct galaxyxr_hmd *hmd,
 	 * In clock-tracker terminology local is host CLOCK_MONOTONIC and remote
 	 * is the shared hardware QTimer used by SSC and camera CSID.
 	 */
-	bool converted = m_clock_windowed_skew_tracker_to_remote(hmd->qtimer_clock_tracker, at_timestamp_ns,
-	                                                         &query_qtimer_ns);
+	bool converted =
+	    m_clock_windowed_skew_tracker_to_remote(hmd->qtimer_clock_tracker, at_timestamp_ns, &query_qtimer_ns);
 	os_mutex_unlock(&hmd->mutex);
 	if (!converted || query_qtimer_ns <= 0) {
 		*out_relation = fallback;
@@ -892,8 +893,7 @@ galaxyxr_hmd_create(void)
 	enum u_device_alloc_flags flags =
 	    (enum u_device_alloc_flags)(U_DEVICE_ALLOC_HMD | U_DEVICE_ALLOC_TRACKING_NONE);
 
-	struct galaxyxr_hmd *hmd =
-	    U_DEVICE_ALLOCATE(struct galaxyxr_hmd, flags, GALAXYXR_HMD_INPUT_COUNT, 0);
+	struct galaxyxr_hmd *hmd = U_DEVICE_ALLOCATE(struct galaxyxr_hmd, flags, GALAXYXR_HMD_INPUT_COUNT, 0);
 	hmd->log_level = debug_get_log_option_galaxyxr_log();
 	hmd->sensor_control_fd = -1;
 
@@ -917,8 +917,7 @@ galaxyxr_hmd_create(void)
 
 	hmd->relation = (struct xrt_space_relation)XRT_SPACE_RELATION_ZERO;
 	m_relation_history_create(&hmd->qtimer_relation_history);
-	hmd->qtimer_clock_tracker =
-	    m_clock_windowed_skew_tracker_alloc(GXR_CLOCK_TRACKER_WINDOW_SAMPLES);
+	hmd->qtimer_clock_tracker = m_clock_windowed_skew_tracker_alloc(GXR_CLOCK_TRACKER_WINDOW_SAMPLES);
 	if (hmd->qtimer_clock_tracker == NULL) {
 		GXR_ERROR(hmd, "Failed to allocate QTimer clock tracker");
 		galaxyxr_hmd_destroy(&hmd->base);
@@ -995,16 +994,17 @@ galaxyxr_hmd_create(void)
 			float tx, ty;
 			galaxyxr_profile_panel_to_tan(&hmd->profile[e], 1, 0.0f, 0.0f, &tx, &ty);
 			GXR_INFO(hmd, "Profile fov[%u]: %.1f/%.1f h, %.1f/%.1f v deg, panel center %+.2f/%+.2f deg",
-			         e,                                                                              //
+			         e, //
 			         fov->angle_left * (180.0f / (float)M_PI), fov->angle_right * (180.0f / (float)M_PI),
 			         fov->angle_up * (180.0f / (float)M_PI), fov->angle_down * (180.0f / (float)M_PI),
 			         atanf(tx) * (180.0f / (float)M_PI), atanf(ty) * (180.0f / (float)M_PI));
 			if (hmd->have_view_pose) {
 				const struct xrt_pose *p = &hmd->view_pose[e];
-				GXR_INFO(hmd,
-				         "View pose[%u]: pos (%+.2f, %+.2f, %+.2f) mm, quat (%+.4f, %+.4f, %+.4f, %+.4f)",
-				         e, p->position.x * 1000.0f, p->position.y * 1000.0f, p->position.z * 1000.0f,
-				         p->orientation.x, p->orientation.y, p->orientation.z, p->orientation.w);
+				GXR_INFO(
+				    hmd,
+				    "View pose[%u]: pos (%+.2f, %+.2f, %+.2f) mm, quat (%+.4f, %+.4f, %+.4f, %+.4f)", e,
+				    p->position.x * 1000.0f, p->position.y * 1000.0f, p->position.z * 1000.0f,
+				    p->orientation.x, p->orientation.y, p->orientation.z, p->orientation.w);
 			}
 		}
 	} else {
@@ -1063,8 +1063,7 @@ galaxyxr_hmd_create(void)
 			hmd->foveation_gaze = use_gaze;
 #endif
 			GXR_INFO(hmd, "Foveation: %.1f deg fovea radius, %s", radius_deg,
-			         use_gaze ? "following the gaze, eye cameras on demand"
-			                  : "fixed at the panel centre");
+			         use_gaze ? "following the gaze, eye cameras on demand" : "fixed at the panel centre");
 		}
 	}
 
@@ -1086,9 +1085,9 @@ galaxyxr_hmd_create(void)
 	if (hmd->imu_cal.valid) {
 		hmd->gyro_bias = hmd->imu_cal.gyro_bias;
 		GXR_INFO(hmd, "IMU factory cal%s: gyro bias (%+.2f, %+.2f, %+.2f) mrad/s scale (%.4f, %.4f, %.4f)",
-		         debug_get_bool_option_galaxyxr_imu_cal() ? "" : " (DISABLED)",             //
-		         hmd->imu_cal.gyro_bias.x * 1000.0f, hmd->imu_cal.gyro_bias.y * 1000.0f,    //
-		         hmd->imu_cal.gyro_bias.z * 1000.0f,                                        //
+		         debug_get_bool_option_galaxyxr_imu_cal() ? "" : " (DISABLED)",          //
+		         hmd->imu_cal.gyro_bias.x * 1000.0f, hmd->imu_cal.gyro_bias.y * 1000.0f, //
+		         hmd->imu_cal.gyro_bias.z * 1000.0f,                                     //
 		         hmd->imu_cal.gyro_scale.x, hmd->imu_cal.gyro_scale.y, hmd->imu_cal.gyro_scale.z);
 		GXR_INFO(hmd, "IMU factory cal: accel bias (%+.3f, %+.3f, %+.3f) m/s^2 scale (%.4f, %.4f, %.4f)",
 		         hmd->imu_cal.accel_bias.x, hmd->imu_cal.accel_bias.y, hmd->imu_cal.accel_bias.z, //

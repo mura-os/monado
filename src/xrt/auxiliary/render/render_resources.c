@@ -735,11 +735,11 @@ render_resources_init(struct render_resources *r,
 
 	VK_NAME_SAMPLER(vk, r->samplers.clamp_to_border_black, "render_resources sampler clamp_to_border_black");
 
-	ret = vk_create_sampler_border(                  //
-	    vk,                                          // vk_bundle
-	    VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,     // clamp_mode
-	    VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,     // border_color
-	    &r->samplers.clamp_to_border_transparent);   // out_sampler
+	ret = vk_create_sampler_border(                //
+	    vk,                                        // vk_bundle
+	    VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,   // clamp_mode
+	    VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK,   // border_color
+	    &r->samplers.clamp_to_border_transparent); // out_sampler
 	VK_CHK_WITH_RET(ret, "vk_create_sampler_border", false);
 
 	VK_NAME_SAMPLER(vk, r->samplers.clamp_to_border_transparent,
@@ -1065,11 +1065,11 @@ render_resources_init(struct render_resources *r,
 			                        "render_resources gfx nlayer pipeline layout");
 
 			if (passthrough_descriptor_set_layout != VK_NULL_HANDLE) {
-				ret = create_gfx_nlayer_pipeline_layout(                //
-				    vk,                                                 //
-				    r->gfx.nlayer.descriptor_set_layouts[i],            //
-				    passthrough_descriptor_set_layout,                  //
-				    &r->gfx.nlayer.passthrough_pipeline_layouts[i]);    //
+				ret = create_gfx_nlayer_pipeline_layout(             //
+				    vk,                                              //
+				    r->gfx.nlayer.descriptor_set_layouts[i],         //
+				    passthrough_descriptor_set_layout,               //
+				    &r->gfx.nlayer.passthrough_pipeline_layouts[i]); //
 				VK_CHK_WITH_RET(ret, "create_gfx_nlayer_pipeline_layout passthrough", false);
 				VK_NAME_PIPELINE_LAYOUT(vk, r->gfx.nlayer.passthrough_pipeline_layouts[i],
 				                        "render_resources gfx nlayer passthrough pipeline layout");
@@ -1317,14 +1317,16 @@ render_resources_init(struct render_resources *r,
 		uint32_t per_stage_budget = MIN(vk->limits.max_per_stage_descriptor_samplers,
 		                                vk->limits.max_per_stage_descriptor_sampled_images);
 		uint32_t distortion_cost = 3 * r->view_count;
-		uint32_t source_budget = (per_stage_budget > distortion_cost) ? (per_stage_budget - distortion_cost) : 0;
+		uint32_t source_budget =
+		    (per_stage_budget > distortion_cost) ? (per_stage_budget - distortion_cost) : 0;
 		uint32_t budget_n = source_budget / r->view_count;
 		r->compute.distortion_nlayer.effective_nlayer_max = MIN((uint32_t)RENDER_NLAYER_MAX, budget_n);
 
-		U_LOG_I("nlayer fast path: effective max N = %u (compile cap %u, device per-stage budget %u, "
-		        "view_count %u)",
-		        r->compute.distortion_nlayer.effective_nlayer_max, (uint32_t)RENDER_NLAYER_MAX,
-		        per_stage_budget, r->view_count);
+		U_LOG_I(
+		    "nlayer fast path: effective max N = %u (compile cap %u, device per-stage budget %u, "
+		    "view_count %u)",
+		    r->compute.distortion_nlayer.effective_nlayer_max, (uint32_t)RENDER_NLAYER_MAX, per_stage_budget,
+		    r->view_count);
 	}
 
 	const uint32_t effective_max = r->compute.distortion_nlayer.effective_nlayer_max;
@@ -1389,8 +1391,8 @@ render_resources_init(struct render_resources *r,
 		    .pSetLayouts = r->compute.distortion_nlayer.descriptor_set_layouts,
 		};
 
-		ret = vk->vkAllocateDescriptorSets(vk->device, &alloc_info,
-		                                   r->compute.distortion_nlayer.descriptor_sets);
+		ret =
+		    vk->vkAllocateDescriptorSets(vk->device, &alloc_info, r->compute.distortion_nlayer.descriptor_sets);
 		VK_CHK_WITH_RET(ret, "vkAllocateDescriptorSets", false);
 	}
 
@@ -1403,8 +1405,7 @@ render_resources_init(struct render_resources *r,
 	    memory_property_flags,             // memory_property_flags
 	    nlayer_ubo_size);                  // size
 	VK_CHK_WITH_RET(ret, "render_buffer_init", false);
-	VK_NAME_BUFFER(vk, r->compute.distortion_nlayer.ubo.buffer,
-	               "render_resources compute distortion nlayer ubo");
+	VK_NAME_BUFFER(vk, r->compute.distortion_nlayer.ubo.buffer, "render_resources compute distortion nlayer ubo");
 	ret = render_buffer_map(                //
 	    vk,                                 // vk_bundle
 	    &r->compute.distortion_nlayer.ubo); // buffer
@@ -1609,14 +1610,14 @@ nlayer_pipeline_key(uint32_t layer_count,
 {
 	do_cac = do_distortion && do_cac;
 
-	out_key[0] = ((uint64_t)(do_cac ? 1u : 0u) << 57) |  //
-	             ((uint64_t)eye_hidden_mask << 41) |     //
-	             ((uint64_t)inverted_alpha_mask << 33) | //
-	             ((uint64_t)unpremult_mask << 25) |      //
-	             ((uint64_t)layer_types << 9) |          //
-	             ((uint64_t)layer_count << 5) |          //
-	             ((uint64_t)scanout_direction << 2) |    //
-	             ((uint64_t)(do_distortion ? 1u : 0u));  //
+	out_key[0] = ((uint64_t)(do_cac ? 1u : 0u) << 57) |         //
+	             ((uint64_t)eye_hidden_mask << 41) |            //
+	             ((uint64_t)inverted_alpha_mask << 33) |        //
+	             ((uint64_t)unpremult_mask << 25) |             //
+	             ((uint64_t)layer_types << 9) |                 //
+	             ((uint64_t)layer_count << 5) |                 //
+	             ((uint64_t)scanout_direction << 2) |           //
+	             ((uint64_t)(do_distortion ? 1u : 0u));         //
 	out_key[1] = ((uint64_t)projection_bounds_test_mask << 8) | //
 	             ((uint64_t)scanout_compensate_layers_mask);    //
 }

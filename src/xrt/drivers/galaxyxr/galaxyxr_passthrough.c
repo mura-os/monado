@@ -270,8 +270,7 @@ pick_mode(struct galaxyxr_passthrough *p)
 		GXP_WARN(p, "galaxyxr passthrough: no 3000x3000 main mode, using automatic mode selection");
 		return 0;
 	}
-	GXP_INFO(p, "galaxyxr passthrough: sensor mode %d '%.*s' %ux%u@%.1f", best + 1,
-	         (int)TITAN_PROTO_NAME_LEN,
+	GXP_INFO(p, "galaxyxr passthrough: sensor mode %d '%.*s' %ux%u@%.1f", best + 1, (int)TITAN_PROTO_NAME_LEN,
 	         modes[best].name, modes[best].width, modes[best].height, modes[best].fps);
 	return (uint32_t)(best + 1);
 }
@@ -400,8 +399,7 @@ teardown_connection(struct galaxyxr_passthrough *p, bool send_close)
 	free_token_list(releases);
 	close_received_fds(slot_fds, slot_fd_count);
 	if (feedback_sequence > 0) {
-		GXP_INFO(p,
-		         "galaxyxr passthrough: FRAME_USED %llu sent, %llu locally dropped across %llu render ticks",
+		GXP_INFO(p, "galaxyxr passthrough: FRAME_USED %llu sent, %llu locally dropped across %llu render ticks",
 		         (unsigned long long)feedback_sent, (unsigned long long)feedback_dropped,
 		         (unsigned long long)feedback_sequence);
 	}
@@ -678,8 +676,8 @@ client_thread(void *ptr)
 			interruptible_sleep(p, 1000);
 			break;
 		case TITAN_MSG_ERROR:
-			GXP_WARN(p, "galaxyxr passthrough: unexpected Titan error: %.*s",
-			         (int)TITAN_PROTO_NAME_LEN, message.error.text);
+			GXP_WARN(p, "galaxyxr passthrough: unexpected Titan error: %.*s", (int)TITAN_PROTO_NAME_LEN,
+			         message.error.text);
 			teardown_connection(p, false);
 			interruptible_sleep(p, 1000);
 			break;
@@ -739,9 +737,8 @@ resolve_capture_poses(struct galaxyxr_passthrough *p,
 	    XRT_SPACE_RELATION_ORIENTATION_VALID_BIT | XRT_SPACE_RELATION_ORIENTATION_TRACKED_BIT;
 	struct xrt_space_relation latest = {0};
 	int64_t latest_qtimer_ns = 0;
-	bool have_latest =
-	    p->qtimer_relation_history != NULL &&
-	    m_relation_history_get_latest(p->qtimer_relation_history, &latest_qtimer_ns, &latest);
+	bool have_latest = p->qtimer_relation_history != NULL &&
+	                   m_relation_history_get_latest(p->qtimer_relation_history, &latest_qtimer_ns, &latest);
 
 	struct xrt_pose fallback = XRT_POSE_IDENTITY;
 	if (have_latest && (latest.relation_flags & required) == required) {
@@ -1055,8 +1052,8 @@ galaxyxr_passthrough_create(const char *calibration_path, struct m_relation_hist
 		free(p);
 		return NULL;
 	}
-	GXP_INFO(p, "galaxyxr passthrough: calibration from %s, IPD %.2f mm",
-	         p->base.calibration.source_path, p->base.calibration.calibration_ipd_mm);
+	GXP_INFO(p, "galaxyxr passthrough: calibration from %s, IPD %.2f mm", p->base.calibration.source_path,
+	         p->base.calibration.calibration_ipd_mm);
 
 	p->wake_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
 	if (p->wake_fd < 0) {

@@ -89,20 +89,19 @@ if(XRT_BUILD_DRIVER_GALAXYXR)
 	target_link_libraries(drv_galaxyxr PRIVATE xrt-interfaces aux_util aux_os aux_math)
 	if(XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING)
 		target_sources(
-			drv_galaxyxr
-			PRIVATE
-				galaxyxr/galaxyxr_eye_tracking.c
-				galaxyxr/galaxyxr_eye_tracking.h
+			drv_galaxyxr PRIVATE galaxyxr/galaxyxr_eye_tracking.c
+					     galaxyxr/galaxyxr_eye_tracking.h
 			)
 		target_link_libraries(drv_galaxyxr PRIVATE GalaxyXR::EyeTracking)
-		target_compile_definitions(drv_galaxyxr PRIVATE XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING)
+		target_compile_definitions(
+			drv_galaxyxr PRIVATE XRT_BUILD_DRIVER_GALAXYXR_EYE_TRACKING
+			)
 	endif()
 	if(XRT_FEATURE_TITAN_PASSTHROUGH)
 		target_sources(
 			drv_galaxyxr
 			PRIVATE
-				galaxyxr/galaxyxr_passthrough.c
-				galaxyxr/galaxyxr_passthrough.h
+				galaxyxr/galaxyxr_passthrough.c galaxyxr/galaxyxr_passthrough.h
 				galaxyxr/galaxyxr_passthrough_calibration.c
 				galaxyxr/galaxyxr_passthrough_calibration.h
 			)

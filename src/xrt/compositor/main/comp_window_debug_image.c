@@ -329,12 +329,6 @@ target_set_title(struct comp_target *ct, const char *title)
 	// No-op
 }
 
-static bool
-target_is_shared_presentable_image(struct comp_target *ct)
-{
-	return false;
-}
-
 static void
 target_destroy(struct comp_target *ct)
 {
@@ -388,7 +382,6 @@ target_create(struct comp_compositor *c)
 	dit->base.info_gpu = target_info_gpu;
 	dit->base.set_title = target_set_title;
 	dit->base.queue_supports_present = target_queue_supports_present;
-	dit->base.is_shared_presentable_image = target_is_shared_presentable_image;
 	dit->base.get_info = comp_target_get_info_default;
 	dit->base.set_output_enabled = comp_target_set_output_enabled_default;
 	dit->base.destroy = target_destroy;

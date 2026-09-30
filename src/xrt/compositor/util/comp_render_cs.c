@@ -576,8 +576,7 @@ crc_nlayer_fast_path(struct render_compute *render,
 
 			const struct xrt_layer_quad_data *q = &data->quad;
 			const uint32_t array_index = q->sub.array_index;
-			const struct comp_swapchain_image *image =
-			    get_layer_image(layer, 0, q->sub.image_index);
+			const struct comp_swapchain_image *image = get_layer_image(layer, 0, q->sub.image_index);
 			VkImageView image_view = get_image_view(image, data->flags, array_index);
 
 			struct xrt_normalized_rect rect = XRT_STRUCT_INIT;
@@ -618,8 +617,7 @@ crc_nlayer_fast_path(struct render_compute *render,
 				image_index = ld->equirect2.sub.image_index;
 				src_rect = &ld->equirect2.sub.norm_rect;
 			}
-			const struct comp_swapchain_image *image =
-			    get_layer_image(layer, 0, image_index);
+			const struct comp_swapchain_image *image = get_layer_image(layer, 0, image_index);
 			VkImageView image_view = get_image_view(image, data->flags, array_index);
 
 			struct xrt_normalized_rect rect = XRT_STRUCT_INIT;
@@ -653,8 +651,7 @@ crc_nlayer_fast_path(struct render_compute *render,
 				vds[v] = &depth->v[v];
 			}
 		} else {
-			U_LOG_E("nlayer fast path: layer %u type %u not supported", l,
-			        (uint32_t)data->type);
+			U_LOG_E("nlayer fast path: layer %u type %u not supported", l, (uint32_t)data->type);
 			assert(false);
 			return false;
 		}
@@ -676,11 +673,9 @@ crc_nlayer_fast_path(struct render_compute *render,
 		for (uint32_t v = 0; v < view_count; ++v) {
 			uint32_t i = l * view_count + v;
 			uint32_t array_index = vds[v]->sub.array_index;
-			const struct comp_swapchain_image *image =
-			    get_layer_image(layer, v, vds[v]->sub.image_index);
+			const struct comp_swapchain_image *image = get_layer_image(layer, v, vds[v]->sub.image_index);
 
-			const struct comp_swapchain *csc =
-			    (struct comp_swapchain *)comp_layer_get_swapchain(layer, v);
+			const struct comp_swapchain *csc = (struct comp_swapchain *)comp_layer_get_swapchain(layer, v);
 			if (!comp_swapchain_format_has_alpha(csc)) {
 				alpha_safe = false;
 			}
@@ -1149,8 +1144,7 @@ comp_render_cs_dispatch(struct render_compute *render,
 		    layer,                //
 		    vds);                 //
 
-	} else if (!nlayer_enabled && fast_path && layer_count == 1 &&
-	           layer->data.type == XRT_LAYER_PROJECTION_DEPTH) {
+	} else if (!nlayer_enabled && fast_path && layer_count == 1 && layer->data.type == XRT_LAYER_PROJECTION_DEPTH) {
 		// Existing 1-projection-layer fast path (depth variant).
 		const struct xrt_layer_projection_depth_data *depth = &layer->data.depth;
 		const struct xrt_layer_projection_view_data *vds[XRT_MAX_VIEWS];

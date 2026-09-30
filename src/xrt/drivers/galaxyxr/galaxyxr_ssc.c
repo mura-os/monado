@@ -239,7 +239,12 @@ u2f(uint32_t u)
  */
 
 static int
-ssc_send(struct galaxyxr_ssc *ssc, uint64_t uid_high, uint64_t uid_low, uint32_t msg_id, const uint8_t *payload, size_t payload_len)
+ssc_send(struct galaxyxr_ssc *ssc,
+         uint64_t uid_high,
+         uint64_t uid_low,
+         uint32_t msg_id,
+         const uint8_t *payload,
+         size_t payload_len)
 {
 	uint8_t pb[1024];
 	size_t po = 0;
@@ -500,8 +505,7 @@ handle_attr_event(struct galaxyxr_ssc *ssc, uint64_t uid_lo, uint64_t uid_hi, pb
 			chg->lo = uid_lo;
 			chg->hi = uid_hi;
 			chg->valid = true;
-			U_LOG_I("galaxyxr: enabling %s (on-change)",
-			        p->type == GALAXYXR_SSC_IPD ? "ipd" : "proximity");
+			U_LOG_I("galaxyxr: enabling %s (on-change)", p->type == GALAXYXR_SSC_IPD ? "ipd" : "proximity");
 			ssc_send(ssc, uid_hi, uid_lo, SNS_STD_ON_CHANGE_CONFIG, NULL, 0);
 			return;
 		}
@@ -514,8 +518,8 @@ handle_attr_event(struct galaxyxr_ssc *ssc, uint64_t uid_lo, uint64_t uid_hi, pb
 		slot->lo = uid_lo;
 		slot->hi = uid_hi;
 		slot->valid = true;
-		U_LOG_I("galaxyxr: enabling %s (hw_id 0) at %.0f Hz",
-		        p->type == GALAXYXR_SSC_GYRO ? "gyro" : "accel", ssc->rate_hz);
+		U_LOG_I("galaxyxr: enabling %s (hw_id 0) at %.0f Hz", p->type == GALAXYXR_SSC_GYRO ? "gyro" : "accel",
+		        ssc->rate_hz);
 		ssc_enable(ssc, uid_hi, uid_lo, ssc->rate_hz);
 		return;
 	}
@@ -675,8 +679,8 @@ handle_response(struct galaxyxr_ssc *ssc, pb_t r, galaxyxr_ssc_sample_fn fn, voi
 				}
 			}
 			if (inner.p != NULL) {
-				samples += handle_body(ssc, uid_lo, uid_hi, msg_id, SSC_TICKS_TO_NS(ticks), inner,
-				                       fn, ud);
+				samples +=
+				    handle_body(ssc, uid_lo, uid_hi, msg_id, SSC_TICKS_TO_NS(ticks), inner, fn, ud);
 			}
 		} else {
 			d_skip(&r, w);

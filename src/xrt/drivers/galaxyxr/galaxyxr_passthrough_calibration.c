@@ -157,9 +157,8 @@ trim(char *text)
 		text++;
 	}
 	size_t length = strlen(text);
-	while (length > 0 &&
-	       (text[length - 1] == ' ' || text[length - 1] == '\t' || text[length - 1] == '\r' ||
-	        text[length - 1] == '\n')) {
+	while (length > 0 && (text[length - 1] == ' ' || text[length - 1] == '\t' || text[length - 1] == '\r' ||
+	                      text[length - 1] == '\n')) {
 		text[--length] = '\0';
 	}
 	return text;
@@ -259,12 +258,7 @@ sensor_eye(const char *id)
 }
 
 static void
-parse_xyz(const char *line,
-          double value[3],
-          uint32_t *have,
-          uint32_t x_bit,
-          uint32_t y_bit,
-          uint32_t z_bit)
+parse_xyz(const char *line, double value[3], uint32_t *have, uint32_t x_bit, uint32_t y_bit, uint32_t z_bit)
 {
 	if (key_number(line, "x", &value[0])) {
 		*have |= x_bit;
@@ -332,11 +326,9 @@ open_block(struct profile_parser *parser, const char *line)
 	if (parser->depth == 0) {
 		if (length == strlen("cameras") && strncmp(line, "cameras", length) == 0) {
 			memset(&parser->current_camera, 0, sizeof(parser->current_camera));
-		} else if (length == strlen("camera_extrinsics") &&
-		           strncmp(line, "camera_extrinsics", length) == 0) {
+		} else if (length == strlen("camera_extrinsics") && strncmp(line, "camera_extrinsics", length) == 0) {
 			memset(&parser->current_camera_ext, 0, sizeof(parser->current_camera_ext));
-		} else if (length == strlen("sensor_extrinsics") &&
-		           strncmp(line, "sensor_extrinsics", length) == 0) {
+		} else if (length == strlen("sensor_extrinsics") && strncmp(line, "sensor_extrinsics", length) == 0) {
 			memset(&parser->current_sensor_ext, 0, sizeof(parser->current_sensor_ext));
 		}
 	}
@@ -459,11 +451,9 @@ parse_camera_ext_line(struct profile_parser *parser, const char *line)
 		} else {
 			key_string(line, "camera_id", transform->id, sizeof(transform->id));
 		}
-	} else if (parser->depth == 3 && block_is(parser, 1, "frame_t_camera") &&
-	           block_is(parser, 2, "p")) {
+	} else if (parser->depth == 3 && block_is(parser, 1, "frame_t_camera") && block_is(parser, 2, "p")) {
 		parse_xyz(line, transform->p, &transform->have_p, HAVE_X, HAVE_Y, HAVE_Z);
-	} else if (parser->depth == 3 && block_is(parser, 1, "frame_t_camera") &&
-	           block_is(parser, 2, "q")) {
+	} else if (parser->depth == 3 && block_is(parser, 1, "frame_t_camera") && block_is(parser, 2, "q")) {
 		parse_quaternion(line, transform->q, &transform->have_q);
 	}
 }
@@ -638,11 +628,8 @@ point_dot(struct point2 a, struct point2 b)
 }
 
 static bool
-sphere_intersection(const struct window2 *window,
-                    struct point2 origin,
-                    struct point2 direction,
-                    double radius,
-                    struct point2 *out)
+sphere_intersection(
+    const struct window2 *window, struct point2 origin, struct point2 direction, double radius, struct point2 *out)
 {
 	// In this axial plane the sphere centre is (-distance, 0).
 	struct point2 relative = {
@@ -667,11 +654,8 @@ sphere_intersection(const struct window2 *window,
 }
 
 static bool
-refract_direction(struct point2 incident,
-                  struct point2 normal_to_next_medium,
-                  double from_index,
-                  double to_index,
-                  struct point2 *out)
+refract_direction(
+    struct point2 incident, struct point2 normal_to_next_medium, double from_index, double to_index, struct point2 *out)
 {
 	double eta = from_index / to_index;
 	double normal_component = point_dot(incident, normal_to_next_medium);
@@ -702,8 +686,7 @@ trace_window(const struct window2 *window,
              struct point2 *outer_ray)
 {
 	struct point2 inner_point;
-	if (!sphere_intersection(window, (struct point2){0.0, 0.0}, camera_ray, window->inner_radius,
-	                         &inner_point)) {
+	if (!sphere_intersection(window, (struct point2){0.0, 0.0}, camera_ray, window->inner_radius, &inner_point)) {
 		return false;
 	}
 	struct point2 inner_normal = {
@@ -864,15 +847,14 @@ finish_profile(const struct profile_parser *parser, struct xrt_passthrough_calib
 		if (!parser->have_camera[eye] || camera->have != CAM_REQUIRED || !parser->have_camera_ext[eye] ||
 		    !camera_ext->from_imu || camera_ext->have_p != HAVE_XYZ || camera_ext->have_q != HAVE_WXYZ ||
 		    !parser->have_sensor_ext[eye] || !sensor_ext->from_imu || sensor_ext->have_p != HAVE_XYZ ||
-		    sensor_ext->have_q != HAVE_WXYZ || display->sensor_id[0] == '\0' ||
-		    display->have_p != HAVE_XYZ || display->have_q != HAVE_WXYZ ||
-		    strcmp(display->sensor_id, sensor_ext->id) != 0) {
+		    sensor_ext->have_q != HAVE_WXYZ || display->sensor_id[0] == '\0' || display->have_p != HAVE_XYZ ||
+		    display->have_q != HAVE_WXYZ || strcmp(display->sensor_id, sensor_ext->id) != 0) {
 			return false;
 		}
 		if (camera->width < 1.0 || camera->height < 1.0 || camera->width > UINT32_MAX ||
 		    camera->height > UINT32_MAX || camera->fx <= 0.0 || camera->fy <= 0.0 ||
-		    camera->max_undistorted <= 0.0 || camera->max_distorted <= 0.0 ||
-		    camera->rolling_time_ns < 0.0 || camera->rolling_time_ns > (double)UINT64_MAX ||
+		    camera->max_undistorted <= 0.0 || camera->max_distorted <= 0.0 || camera->rolling_time_ns < 0.0 ||
+		    camera->rolling_time_ns > (double)UINT64_MAX ||
 		    camera->timestamp_alignment_ns < (double)INT64_MIN ||
 		    camera->timestamp_alignment_ns > (double)INT64_MAX) {
 			return false;
@@ -934,8 +916,7 @@ finish_profile(const struct profile_parser *parser, struct xrt_passthrough_calib
 		out->eye_midpoint[i] = (float)(0.5 * (eye_position[0][i] + eye_position[1][i]));
 	}
 	if (parser->display[0].have_ipd && parser->display[1].have_ipd) {
-		out->calibration_ipd_mm =
-		    (float)(0.5 * (parser->display[0].ipd_mm + parser->display[1].ipd_mm));
+		out->calibration_ipd_mm = (float)(0.5 * (parser->display[0].ipd_mm + parser->display[1].ipd_mm));
 	}
 	return true;
 }

@@ -980,15 +980,15 @@ create_mesh_pipeline(struct vk_bundle *vk,
 struct mesh_nlayer_params
 {
 	uint32_t projection_bounds_test_mask; // id 1 (frag)
-	int32_t view_count;                 // id 2 (frag)
-	VkBool32 do_distortion;             // id 3 (vert identity-UV switch, frag chroma/mono select)
-	int32_t layer_count;                // id 4
-	int32_t scanout_direction;          // id 5 (vert)
-	uint32_t layer_types;               // id 6
-	uint32_t layer_unpremult_mask;      // id 7 (frag)
-	uint32_t layer_inverted_alpha_mask; // id 8 (frag)
-	uint32_t eye_hidden_mask;           // id 9 (frag)
-	VkBool32 do_cac;                    // id 10
+	int32_t view_count;                   // id 2 (frag)
+	VkBool32 do_distortion;               // id 3 (vert identity-UV switch, frag chroma/mono select)
+	int32_t layer_count;                  // id 4
+	int32_t scanout_direction;            // id 5 (vert)
+	uint32_t layer_types;                 // id 6
+	uint32_t layer_unpremult_mask;        // id 7 (frag)
+	uint32_t layer_inverted_alpha_mask;   // id 8 (frag)
+	uint32_t eye_hidden_mask;             // id 9 (frag)
+	VkBool32 do_cac;                      // id 10
 	// Gfx-only ids: warp varying array element count (the result of
 	// render_gfx_nlayer_warp_count) and the per-slot scanout mask.
 	int32_t warp_count;                      // id 11
@@ -1100,14 +1100,14 @@ gfx_nlayer_pipeline_key(uint32_t layer_count,
 	do_cac = do_distortion && do_cac;
 	do_camera_distortion = do_passthrough && do_camera_distortion;
 
-	out_key[0] = ((uint64_t)(do_cac ? 1u : 0u) << 57) |  //
-	             ((uint64_t)eye_hidden_mask << 41) |     //
-	             ((uint64_t)inverted_alpha_mask << 33) | //
-	             ((uint64_t)unpremult_mask << 25) |      //
-	             ((uint64_t)layer_types << 9) |          //
-	             ((uint64_t)layer_count << 5) |          //
-	             ((uint64_t)scanout_direction << 2) |    //
-	             ((uint64_t)(do_distortion ? 1u : 0u));  //
+	out_key[0] = ((uint64_t)(do_cac ? 1u : 0u) << 57) |               //
+	             ((uint64_t)eye_hidden_mask << 41) |                  //
+	             ((uint64_t)inverted_alpha_mask << 33) |              //
+	             ((uint64_t)unpremult_mask << 25) |                   //
+	             ((uint64_t)layer_types << 9) |                       //
+	             ((uint64_t)layer_count << 5) |                       //
+	             ((uint64_t)scanout_direction << 2) |                 //
+	             ((uint64_t)(do_distortion ? 1u : 0u));               //
 	out_key[1] = ((uint64_t)(do_camera_distortion ? 1u : 0u) << 17) | //
 	             ((uint64_t)(do_passthrough ? 1u : 0u) << 16) |       //
 	             ((uint64_t)projection_bounds_test_mask << 8) |       //
@@ -1504,24 +1504,24 @@ render_gfx_render_pass_get_or_create_nlayer_pipeline(struct render_gfx_render_pa
 	uint32_t descriptor_layer_count = layer_count > 0 ? layer_count : 1;
 
 	VkPipeline pipeline = VK_NULL_HANDLE;
-	VkResult ret = create_mesh_nlayer_pipeline(          //
-	    r->vk,                                           //
-	    rgrp->render_pass,                               //
-	    rgrp->format,                                    //
-	    rgrp->foveation_mechanism,                       //
+	VkResult ret = create_mesh_nlayer_pipeline( //
+	    r->vk,                                  //
+	    rgrp->render_pass,                      //
+	    rgrp->format,                           //
+	    rgrp->foveation_mechanism,              //
 	    do_passthrough ? r->gfx.nlayer.passthrough_pipeline_layouts[descriptor_layer_count - 1]
 	                   : r->gfx.nlayer.pipeline_layouts[descriptor_layer_count - 1],
-	    r->pipeline_cache,                               //
-	    r->mesh.src_binding,                             //
-	    r->mesh.index_count_total,                       //
-	    r->mesh.stride,                                  //
-	    &params,                                         //
+	    r->pipeline_cache,                                        //
+	    r->mesh.src_binding,                                      //
+	    r->mesh.index_count_total,                                //
+	    r->mesh.stride,                                           //
+	    &params,                                                  //
 	    do_passthrough ? r->shaders->mesh_nlayer_passthrough_vert //
 	                   : r->shaders->mesh_nlayer_vert,            //
-	    layer_count == 0 ? r->shaders->mesh_nlayer_passthrough_only_frag
-	                     : (do_passthrough ? r->shaders->mesh_nlayer_passthrough_frag
-	                                       : r->shaders->mesh_nlayer_frag),
-	    &pipeline);                                      //
+	    layer_count == 0
+	        ? r->shaders->mesh_nlayer_passthrough_only_frag
+	        : (do_passthrough ? r->shaders->mesh_nlayer_passthrough_frag : r->shaders->mesh_nlayer_frag),
+	    &pipeline); //
 	if (ret != VK_SUCCESS) {
 		return ret;
 	}
@@ -1871,13 +1871,12 @@ render_gfx_mesh_nlayer_alloc_and_write(struct render_gfx *render,
 	VK_CHK_AND_RET(ret, "render_sub_alloc_ubo_alloc_and_write");
 
 	VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
-	VkDescriptorSetLayout descriptor_set_layout =
-	    r->gfx.nlayer.descriptor_set_layouts[descriptor_layer_count - 1];
-	ret = vk_create_descriptor_set(            //
-	    vk,                                    //
-	    r->gfx.nlayer.descriptor_pool,         //
-	    descriptor_set_layout,                 //
-	    &descriptor_set);                      //
+	VkDescriptorSetLayout descriptor_set_layout = r->gfx.nlayer.descriptor_set_layouts[descriptor_layer_count - 1];
+	ret = vk_create_descriptor_set(    //
+	    vk,                            //
+	    r->gfx.nlayer.descriptor_pool, //
+	    descriptor_set_layout,         //
+	    &descriptor_set);              //
 	VK_CHK_AND_RET(ret, "vk_create_descriptor_set");
 
 	// Source slots: exactly layer_count * view_count entries, the layout
@@ -2024,9 +2023,9 @@ render_gfx_mesh_nlayer_draw(struct render_gfx *render,
 	assert(layer_count > 0 || do_passthrough);
 	uint32_t descriptor_layer_count = layer_count > 0 ? layer_count : 1;
 
-	VkPipelineLayout pipeline_layout =
-	    do_passthrough ? r->gfx.nlayer.passthrough_pipeline_layouts[descriptor_layer_count - 1]
-	                   : r->gfx.nlayer.pipeline_layouts[descriptor_layer_count - 1];
+	VkPipelineLayout pipeline_layout = do_passthrough
+	                                       ? r->gfx.nlayer.passthrough_pipeline_layouts[descriptor_layer_count - 1]
+	                                       : r->gfx.nlayer.pipeline_layouts[descriptor_layer_count - 1];
 
 	VkDescriptorSet descriptor_sets[2] = {descriptor_set, passthrough_descriptor_set};
 	vk->vkCmdBindDescriptorSets(         //

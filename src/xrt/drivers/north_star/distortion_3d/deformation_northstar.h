@@ -12,7 +12,7 @@
 class OpticalSystem
 {
 public:
-	OpticalSystem(){};
+	OpticalSystem() {};
 
 	OpticalSystem(const OpticalSystem &_in);
 

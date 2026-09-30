@@ -194,8 +194,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 		set(CMAKE_REQUIRED_LIBRARIES GalaxyXR::EyeTracking)
 		unset(XRT_HAVE_GALAXYXR_EYE_TRACKING_THREADED_API CACHE)
 		check_symbol_exists(
-			galaxyxr_eyetracking_get_event_fd
-			galaxyxr/eyetracking.h
+			galaxyxr_eyetracking_get_event_fd galaxyxr/eyetracking.h
 			XRT_HAVE_GALAXYXR_EYE_TRACKING_THREADED_API
 			)
 		cmake_pop_check_state()

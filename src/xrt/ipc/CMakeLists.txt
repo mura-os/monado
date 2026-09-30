@@ -184,9 +184,11 @@ if(ANDROID)
 		)
 elseif(XRT_HAVE_LINUX)
 	target_sources(
-		ipc_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/server/ipc_server_mainloop_linux.c
-				   ${CMAKE_CURRENT_SOURCE_DIR}/server/ipc_server_peer.c
-				   ${CMAKE_CURRENT_SOURCE_DIR}/server/ipc_server_peer.h
+		ipc_server
+		PRIVATE
+			${CMAKE_CURRENT_SOURCE_DIR}/server/ipc_server_mainloop_linux.c
+			${CMAKE_CURRENT_SOURCE_DIR}/server/ipc_server_peer.c
+			${CMAKE_CURRENT_SOURCE_DIR}/server/ipc_server_peer.h
 		)
 elseif(WIN32)
 	target_sources(

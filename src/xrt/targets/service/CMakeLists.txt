@@ -31,7 +31,8 @@ if(XRT_HAVE_SYSTEMD)
 	set(extra_desc "in build tree")
 	configure_file(${SOCKET_INPUT} "${CMAKE_CURRENT_BINARY_DIR}/${UNIT_NAME}.socket")
 	configure_file(
-		${CONTROL_SOCKET_INPUT} "${CMAKE_CURRENT_BINARY_DIR}/${UNIT_NAME}-control.socket" @ONLY
+		${CONTROL_SOCKET_INPUT} "${CMAKE_CURRENT_BINARY_DIR}/${UNIT_NAME}-control.socket"
+		@ONLY
 		)
 
 	# Need this step because file(GENERATE) only evaluates generator expressions,
@@ -51,7 +52,9 @@ if(XRT_HAVE_SYSTEMD)
 	add_custom_target(
 		link-systemd-dev-units
 		COMMAND systemctl --user link "${CMAKE_CURRENT_BINARY_DIR}/${UNIT_NAME}.socket"
-		COMMAND systemctl --user link "${CMAKE_CURRENT_BINARY_DIR}/${UNIT_NAME}-control.socket"
+		COMMAND
+			systemctl --user link
+			"${CMAKE_CURRENT_BINARY_DIR}/${UNIT_NAME}-control.socket"
 		COMMAND systemctl --user link "${CMAKE_CURRENT_BINARY_DIR}/${UNIT_NAME}.service"
 		COMMAND systemctl --user daemon-reload
 		VERBATIM

@@ -19,7 +19,7 @@
 set -e
 
 # Comma-delimited list of words for codespell to not try to correct.
-IGNORE_WORDS_LIST="ang,sinc,sie,stoll,wil,daa,localy,od,ser,unknwn,parm,inflight,marge,devault,errorprone,childs"
+IGNORE_WORDS_LIST="ang,sinc,sie,stoll,wil,daa,localy,od,ser,unknwn,parm,inflight,marge,devault,errorprone,childs,cant,VALU"
 IGNORE_REGEX="\b(pEvent|inout|Kimera|InstallIn)\b"
 
 SCRIPTDIR=$(cd "$(dirname "$0")" && pwd)

@@ -52,8 +52,12 @@ struct m_imu_xio_ahrs_settings
 
 #define M_IMU_XIO_AHRS_SETTINGS_DEFAULT                                                                                \
 	{                                                                                                              \
-		.gain = 0.5f, .gyroscope_range = 0.0f, .acceleration_rejection = 90.0f, .magnetic_rejection = 90.0f,   \
-		.recovery_trigger_period = 0, .sensor_alignment = FusionRemapAlignmentNZNXPY,                          \
+	    .gain = 0.5f,                                                                                              \
+	    .gyroscope_range = 0.0f,                                                                                   \
+	    .acceleration_rejection = 90.0f,                                                                           \
+	    .magnetic_rejection = 90.0f,                                                                               \
+	    .recovery_trigger_period = 0,                                                                              \
+	    .sensor_alignment = FusionRemapAlignmentNZNXPY,                                                            \
 	}
 
 struct m_imu_xio_ahrs

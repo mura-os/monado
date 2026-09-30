@@ -77,7 +77,7 @@ struct projection_state
 	OutputSizedArray<int16_t> image_y = {};
 
 	projection_state(const projection_instructions &instructions, cv::Mat &input, cv::Mat &output)
-	    : input(input), distorted_image_eigen(output.data, 128, 128), instructions(instructions){};
+	    : input(input), distorted_image_eigen(output.data, 128, 128), instructions(instructions) {};
 };
 
 

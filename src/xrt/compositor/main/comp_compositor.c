@@ -393,8 +393,8 @@ can_do_projection_layer_fast_path(struct comp_compositor *c)
 		// so a granted fast path never outgrows the budget.
 		bool may_do_passthrough = false;
 #ifdef XRT_FEATURE_PASSTHROUGH_VIEW
-		may_do_passthrough = c->passthrough != NULL &&
-		                     c->base.layer_accum.data.env_blend_mode == XRT_BLEND_MODE_ALPHA_BLEND;
+		may_do_passthrough =
+		    c->passthrough != NULL && c->base.layer_accum.data.env_blend_mode == XRT_BLEND_MODE_ALPHA_BLEND;
 #endif
 
 		uint32_t warp_count = render_gfx_nlayer_warp_count( //
@@ -419,8 +419,8 @@ can_do_projection_layer_fast_path(struct comp_compositor *c)
 		struct comp_layer *layer = &c->base.layer_accum.layers[i];
 		enum xrt_layer_type type = layer->data.type;
 
-		if (type != XRT_LAYER_PROJECTION && type != XRT_LAYER_PROJECTION_DEPTH &&
-		    type != XRT_LAYER_QUAD && type != XRT_LAYER_CYLINDER && type != XRT_LAYER_EQUIRECT2) {
+		if (type != XRT_LAYER_PROJECTION && type != XRT_LAYER_PROJECTION_DEPTH && type != XRT_LAYER_QUAD &&
+		    type != XRT_LAYER_CYLINDER && type != XRT_LAYER_EQUIRECT2) {
 			return false;
 		}
 
@@ -1539,8 +1539,7 @@ comp_main_create_system_compositor(struct xrt_device *xdev,
 		}
 	}
 	if (c->presence.input != NULL) {
-		COMP_INFO(c, "Watching user presence%s.",
-		          c->display.manage_power ? " for display power" : "");
+		COMP_INFO(c, "Watching user presence%s.", c->display.manage_power ? " for display power" : "");
 		u_var_add_bool(c, &c->presence.user_present, "User present");
 	}
 

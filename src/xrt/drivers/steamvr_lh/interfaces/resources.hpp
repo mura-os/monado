@@ -19,7 +19,7 @@ class Resources : public vr::IVRResources
 
 public:
 	Resources(u_logging_level l, const std::string &steamvr_install)
-	    : log_level(l), steamvr_install(steamvr_install){};
+	    : log_level(l), steamvr_install(steamvr_install) {};
 	// ------------------------------------
 	// Shared Resource Methods
 	// ------------------------------------

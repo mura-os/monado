@@ -12,10 +12,7 @@
 #include <initializer_list>
 #include <algorithm>
 
-#define MAKE_PAIR(ENUM)                                                                                                \
-	{                                                                                                              \
-#ENUM, ENUM                                                                                            \
-	}
+#define MAKE_PAIR(ENUM) {#ENUM, ENUM}
 static constexpr std::initializer_list<std::pair<const char *, DXGI_FORMAT>> colorNamesAndFormats = {
     MAKE_PAIR(DXGI_FORMAT_B8G8R8A8_UNORM_SRGB), MAKE_PAIR(DXGI_FORMAT_B8G8R8A8_UNORM),
     MAKE_PAIR(DXGI_FORMAT_R16G16B16A16_FLOAT),  MAKE_PAIR(DXGI_FORMAT_R16G16B16A16_UNORM),

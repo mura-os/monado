@@ -16,7 +16,9 @@ endif()
 
 # Create unit files
 configure_file("@SOCKET_INPUT@" "@CMAKE_CURRENT_BINARY_DIR@/@UNIT_NAME@.socket")
-configure_file("@CONTROL_SOCKET_INPUT@" "@CMAKE_CURRENT_BINARY_DIR@/@UNIT_NAME@-control.socket" @ONLY)
+configure_file(
+	"@CONTROL_SOCKET_INPUT@" "@CMAKE_CURRENT_BINARY_DIR@/@UNIT_NAME@-control.socket" @ONLY
+	)
 configure_file("@SERVICE_INPUT@" "@CMAKE_CURRENT_BINARY_DIR@/@UNIT_NAME@.service")
 
 # Install them

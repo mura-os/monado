@@ -202,7 +202,7 @@ struct xrt_system_roles
  */
 #define XRT_SYSTEM_ROLES_INIT                                                                                          \
 	{                                                                                                              \
-		0, -1, -1, -1, XRT_DEVICE_INVALID, XRT_DEVICE_INVALID, XRT_DEVICE_INVALID,                             \
+	    0, -1, -1, -1, XRT_DEVICE_INVALID, XRT_DEVICE_INVALID, XRT_DEVICE_INVALID,                                 \
 	}
 
 

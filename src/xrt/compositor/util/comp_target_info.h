@@ -34,11 +34,7 @@ struct comp_target_info
  * @relates comp_target_info
  * @ingroup comp_util
  */
-#define COMP_TARGET_INFO_INIT                                                                                          \
-	XRT_C11_COMPOUND(struct comp_target_info)                                                                      \
-	{                                                                                                              \
-		.display_drm_fd = -1                                                                                   \
-	}
+#define COMP_TARGET_INFO_INIT XRT_C11_COMPOUND(struct comp_target_info){.display_drm_fd = -1}
 
 
 #ifdef __cplusplus

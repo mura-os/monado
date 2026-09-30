@@ -160,7 +160,9 @@ map_read_access(const struct render_foveation *f)
 
 //! The map texel rect covering a viewport, clamped to the map.
 static VkRect2D
-view_texel_rect(const struct render_foveation *f, const struct render_foveation_map *map, const struct render_viewport_data *vp)
+view_texel_rect(const struct render_foveation *f,
+                const struct render_foveation_map *map,
+                const struct render_viewport_data *vp)
 {
 	if (vp->w == 0 || vp->h == 0) {
 		return (VkRect2D){{0, 0}, {0, 0}};

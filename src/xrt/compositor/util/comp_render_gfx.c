@@ -741,12 +741,10 @@ passthrough_image_barriers(struct render_gfx *render,
 		            .layerCount = 1,
 		        },
 		};
-		vk->vkCmdPipelineBarrier(render->r->cmd,
-		                         acquire ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-		                                 : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-		                         acquire ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
-		                                 : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-		                         0, 0, NULL, 0, NULL, 1, &barrier);
+		vk->vkCmdPipelineBarrier(
+		    render->r->cmd, acquire ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+		    acquire ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL,
+		    0, NULL, 1, &barrier);
 	}
 }
 
@@ -957,8 +955,7 @@ crg_nlayer_fast_path(struct render_gfx *render,
 
 			const struct comp_swapchain_image *image = get_layer_image(layer, v, vd->sub.image_index);
 
-			const struct comp_swapchain *csc =
-			    (struct comp_swapchain *)comp_layer_get_swapchain(layer, v);
+			const struct comp_swapchain *csc = (struct comp_swapchain *)comp_layer_get_swapchain(layer, v);
 			if (!comp_swapchain_format_has_alpha(csc)) {
 				alpha_safe = false;
 			}
@@ -997,14 +994,16 @@ crg_nlayer_fast_path(struct render_gfx *render,
 			    &vd->fov,                                       //
 			    dst_begin,                                      //
 			    &data.transform_timewarp_scanout_begin[ubo_i]); //
-			render_time_warp_matrix_fold_remap_and_rect(&data.transform_timewarp_scanout_begin[ubo_i], &rect);
+			render_time_warp_matrix_fold_remap_and_rect(&data.transform_timewarp_scanout_begin[ubo_i],
+			                                            &rect);
 			if (slot_compensated) {
 				render_calc_time_warp_matrix(                     //
 				    &vd->pose,                                    //
 				    &vd->fov,                                     //
 				    &d->views[v].world_pose_scanout_end,          //
 				    &data.transform_timewarp_scanout_end[ubo_i]); //
-				render_time_warp_matrix_fold_remap_and_rect(&data.transform_timewarp_scanout_end[ubo_i], &rect);
+				render_time_warp_matrix_fold_remap_and_rect(&data.transform_timewarp_scanout_end[ubo_i],
+				                                            &rect);
 			}
 			// Uncompensated slots only read the begin matrix.
 		}
@@ -1053,12 +1052,13 @@ crg_nlayer_fast_path(struct render_gfx *render,
 	    d->scanout_direction,                                   //
 	    &pipeline);                                             //
 	if (ret != VK_SUCCESS) {
-		U_LOG_E("Failed to build gfx nlayer pipeline (N=%u, types=0x%x, unpre=0x%x, inv=0x%x, hidden=0x%x, "
-		        "sc_mask=0x%x, bt_mask=0x%x, d=%d, cac=%d, pt=%d, cam=%d, scanout=%d): %d",
-		        layer_count, layer_types, unpremultiplied_mask, inverted_alpha_mask, eye_hidden_mask,
-		        scanout_compensate_layers_mask, projection_bounds_test_mask, (int)d->do_distortion,
-		        (int)d->do_cac, (int)d->passthrough.active, (int)d->passthrough.do_camera_distortion,
-		        (int)d->scanout_direction, ret);
+		U_LOG_E(
+		    "Failed to build gfx nlayer pipeline (N=%u, types=0x%x, unpre=0x%x, inv=0x%x, hidden=0x%x, "
+		    "sc_mask=0x%x, bt_mask=0x%x, d=%d, cac=%d, pt=%d, cam=%d, scanout=%d): %d",
+		    layer_count, layer_types, unpremultiplied_mask, inverted_alpha_mask, eye_hidden_mask,
+		    scanout_compensate_layers_mask, projection_bounds_test_mask, (int)d->do_distortion, (int)d->do_cac,
+		    (int)d->passthrough.active, (int)d->passthrough.do_camera_distortion, (int)d->scanout_direction,
+		    ret);
 		return false;
 	}
 
@@ -1101,8 +1101,8 @@ crg_nlayer_fast_path(struct render_gfx *render,
 		    layer_count,             //
 		    descriptor_set,          //
 		    d->passthrough.descriptor_set,
-		    pipeline,                //
-		    d->passthrough.active);  //
+		    pipeline,               //
+		    d->passthrough.active); //
 
 		render_gfx_end_view(render);
 	}

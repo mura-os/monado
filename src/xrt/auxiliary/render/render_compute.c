@@ -878,13 +878,9 @@ render_compute_projection_nlayer_timewarp(struct render_compute *render,
 			// the shader; leave them at whatever they previously held.
 			// Per-type slice of the UBO carries the real state.
 			switch (slot_type) {
-			case RENDER_NLAYER_TYPE_QUAD:
-				data->quads[ubo_i] = quad_data[src_i];
-				break;
+			case RENDER_NLAYER_TYPE_QUAD: data->quads[ubo_i] = quad_data[src_i]; break;
 			case RENDER_NLAYER_TYPE_CYLINDER:
-			case RENDER_NLAYER_TYPE_EQUIRECT2:
-				data->wraps[ubo_i] = wrap_data[src_i];
-				break;
+			case RENDER_NLAYER_TYPE_EQUIRECT2: data->wraps[ubo_i] = wrap_data[src_i]; break;
 			case RENDER_NLAYER_TYPE_PROJECTION:
 			default: {
 				const struct xrt_pose *dst_begin;
@@ -901,7 +897,7 @@ render_compute_projection_nlayer_timewarp(struct render_compute *render,
 				    dst_begin,                                       //
 				    &data->transform_timewarp_scanout_begin[ubo_i]); //
 				render_time_warp_matrix_fold_remap_and_rect(         //
-				    &data->transform_timewarp_scanout_begin[ubo_i], //
+				    &data->transform_timewarp_scanout_begin[ubo_i],  //
 				    &src_rects[src_i]);                              //
 				if (slot_compensated) {
 					render_calc_time_warp_matrix(                      //
@@ -910,7 +906,7 @@ render_compute_projection_nlayer_timewarp(struct render_compute *render,
 					    &new_poses_scanout_end[view],                  //
 					    &data->transform_timewarp_scanout_end[ubo_i]); //
 					render_time_warp_matrix_fold_remap_and_rect(       //
-					    &data->transform_timewarp_scanout_end[ubo_i], //
+					    &data->transform_timewarp_scanout_end[ubo_i],  //
 					    &src_rects[src_i]);                            //
 				}
 				// Uncompensated slots only read the begin matrix.
@@ -1000,15 +996,15 @@ render_compute_projection_nlayer_timewarp(struct render_compute *render,
 	    r->compute.distortion_nlayer.ubo.buffer);    //
 
 	vk->vkCmdBindPipeline(r->cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-	vk->vkCmdBindDescriptorSets(            //
-	    r->cmd,                             //
-	    VK_PIPELINE_BIND_POINT_COMPUTE,     //
-	    pipeline_layout,                    //
-	    0,                                  //
-	    1,                                  //
-	    &descriptor_set,                    //
-	    0,                                  //
-	    NULL);                              //
+	vk->vkCmdBindDescriptorSets(        //
+	    r->cmd,                         //
+	    VK_PIPELINE_BIND_POINT_COMPUTE, //
+	    pipeline_layout,                //
+	    0,                              //
+	    1,                              //
+	    &descriptor_set,                //
+	    0,                              //
+	    NULL);                          //
 
 	uint32_t w = 0, h = 0;
 	calc_dispatch_dims_views(views, view_count, &w, &h);

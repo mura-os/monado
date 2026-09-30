@@ -168,8 +168,7 @@ xrt_passthrough_stream_acquire_frame(struct xrt_passthrough_stream *xp, struct x
 }
 
 static inline bool
-xrt_passthrough_stream_is_frame_valid(struct xrt_passthrough_stream *xp,
-                                      const struct xrt_passthrough_frame *frame)
+xrt_passthrough_stream_is_frame_valid(struct xrt_passthrough_stream *xp, const struct xrt_passthrough_frame *frame)
 {
 	return xp != NULL && frame != NULL && frame->token != NULL &&
 	       (xp->is_frame_valid == NULL || xp->is_frame_valid(xp, frame));

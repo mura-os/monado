@@ -161,14 +161,14 @@ read32(const unsigned char **buffer)
 static inline uint64_t
 read64(const unsigned char **buffer)
 {
-	uint64_t ret = ((uint64_t) * (*buffer + 0) << 0) |  //
-	               ((uint64_t) * (*buffer + 1) << 8) |  //
-	               ((uint64_t) * (*buffer + 2) << 16) | //
-	               ((uint64_t) * (*buffer + 3) << 24) | //
-	               ((uint64_t) * (*buffer + 4) << 32) | //
-	               ((uint64_t) * (*buffer + 5) << 40) | //
-	               ((uint64_t) * (*buffer + 6) << 48) | //
-	               ((uint64_t) * (*buffer + 7) << 56);
+	uint64_t ret = ((uint64_t)*(*buffer + 0) << 0) |  //
+	               ((uint64_t)*(*buffer + 1) << 8) |  //
+	               ((uint64_t)*(*buffer + 2) << 16) | //
+	               ((uint64_t)*(*buffer + 3) << 24) | //
+	               ((uint64_t)*(*buffer + 4) << 32) | //
+	               ((uint64_t)*(*buffer + 5) << 40) | //
+	               ((uint64_t)*(*buffer + 6) << 48) | //
+	               ((uint64_t)*(*buffer + 7) << 56);
 	*buffer += 8;
 	return ret;
 }

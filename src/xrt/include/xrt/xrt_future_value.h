@@ -80,7 +80,8 @@ xrt_future_value_make_none(const void *ignore)
 		return XRT_FUTURE_VALUE_MAKE(TYPE_NAME, MEMBER, value);                                                \
 	}                                                                                                              \
                                                                                                                        \
-	static inline struct xrt_future_value xrt_future_value_make_##MEMBER##_ptr(const TYPE *value)                  \
+	static inline struct xrt_future_value                                                                          \
+	xrt_future_value_make_##MEMBER##_ptr(const TYPE *value)                                                        \
 	{                                                                                                              \
 		assert(value != NULL);                                                                                 \
 		return XRT_FUTURE_VALUE_MAKE(TYPE_NAME, MEMBER, (*value));                                             \

@@ -8,16 +8,15 @@
 
 include(ShaderSpecialization)
 
-set(
-	DEPENDS
-	blit.inc.glsl
-	hsv.inc.glsl
-	layer_defines.inc.glsl
-	mesh_nlayer.inc.glsl
-	mesh_nlayer_warp.inc.glsl
-	mesh_nlayer_vert.inc.glsl
-	mesh_nlayer_frag.inc.glsl
-	srgb.inc.glsl
+set(DEPENDS
+    blit.inc.glsl
+    hsv.inc.glsl
+    layer_defines.inc.glsl
+    mesh_nlayer.inc.glsl
+    mesh_nlayer_warp.inc.glsl
+    mesh_nlayer_vert.inc.glsl
+    mesh_nlayer_frag.inc.glsl
+    srgb.inc.glsl
 	)
 
 set(SHADERS

@@ -920,8 +920,8 @@ gxr_eye_setup(struct comp_window_galaxyxr *w, struct gxr_eye *eye)
 	uint32_t ndma = 0, nvig = 0, nvirt = 0;
 	for (uint32_t i = 0; i < ncand; i++) {
 		info[i] = plane_info_get(eye->fd, cand[i], (int)i);
-		bool dma_column = info[i].dma && !info[i].virt && info[i].pipe_idx >= 0 &&
-		                  info[i].pipe_idx < (long)GXR_NPLANES;
+		bool dma_column =
+		    info[i].dma && !info[i].virt && info[i].pipe_idx >= 0 && info[i].pipe_idx < (long)GXR_NPLANES;
 		ndma += dma_column;
 		nvig += info[i].vig;
 		nvirt += info[i].vig && info[i].virt;
@@ -973,9 +973,11 @@ gxr_eye_setup(struct comp_window_galaxyxr *w, struct gxr_eye *eye)
 	         "[%s] %s conn=%u crtc=%u src_base=%d planes=%u,%u,%u,%u pipe_idx=%ld,%ld,%ld,%ld (%s) "
 	         "%dx%d@%d",
 	         eye->wl_name, eye->name, eye->conn, eye->crtc, eye->src_base, eye->planes[0], eye->planes[1],
-	         eye->planes[2], eye->planes[3], sel[0].pipe_idx, sel[1].pipe_idx, sel[2].pipe_idx,
-	         sel[3].pipe_idx,
-	         want_dma ? "DMA" : want_virt ? "virtual VIG" : want_vig ? "VIG" : "no caps blob, first granted",
+	         eye->planes[2], eye->planes[3], sel[0].pipe_idx, sel[1].pipe_idx, sel[2].pipe_idx, sel[3].pipe_idx,
+	         want_dma    ? "DMA"
+	         : want_virt ? "virtual VIG"
+	         : want_vig  ? "VIG"
+	                     : "no caps blob, first granted",
 	         eye->mode.hdisplay, eye->mode.vdisplay, mode_hz(&eye->mode));
 
 	return true;
@@ -1012,8 +1014,7 @@ add_plane(drmModeAtomicReq *req, struct gxr_eye *eye, uint32_t slice, uint32_t f
 	int dst_x = (int)(slice * GXR_SLICE_W);
 	int src_x = eye->src_base + dst_x;
 
-#define AP(name, value)                                                                                                \
-	drmModeAtomicAddProperty(req, plane, prop_id(eye, plane, DRM_MODE_OBJECT_PLANE, name), (value))
+#define AP(name, value) drmModeAtomicAddProperty(req, plane, prop_id(eye, plane, DRM_MODE_OBJECT_PLANE, name), (value))
 	AP("FB_ID", fb);
 	AP("CRTC_ID", eye->crtc);
 	AP("SRC_X", (uint64_t)src_x << 16);
@@ -1125,7 +1126,8 @@ gxr_match_left_flip(struct comp_window_galaxyxr *w, int64_t flip_ns)
 }
 
 static void
-page_flip_handler2(int fd, unsigned int seq, unsigned int tv_sec, unsigned int tv_usec, unsigned int crtc_id, void *data)
+page_flip_handler2(
+    int fd, unsigned int seq, unsigned int tv_sec, unsigned int tv_usec, unsigned int crtc_id, void *data)
 {
 	struct gxr_eye *eye = data;
 	eye->flip_pending = false;
@@ -1391,8 +1393,8 @@ gxr_format_supported_by_vk(struct comp_window_galaxyxr *w, VkFormat format, uint
 		return false;
 	}
 
-	return (ext_props.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT) !=
-	       0;
+	return (ext_props.externalMemoryProperties.externalMemoryFeatures &
+	        VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT) != 0;
 }
 
 // Prefer the 8888 formats over anything fancier, XRGB8888 scanout through the
@@ -1589,10 +1591,7 @@ gxr_alloc_image_ubwc(struct comp_window_galaxyxr *w, struct gxr_image *img, VkFo
 }
 
 static VkResult
-gxr_import_image(struct comp_window_galaxyxr *w,
-                 struct gxr_image *img,
-                 VkFormat format,
-                 VkImageUsageFlags usage)
+gxr_import_image(struct comp_window_galaxyxr *w, struct gxr_image *img, VkFormat format, VkImageUsageFlags usage)
 {
 	struct vk_bundle *vk = get_vk(w);
 	VkResult ret;
@@ -2242,8 +2241,7 @@ gxr_target_present(struct comp_target *ct,
 		};
 		ret = w->get_fence_fd(vk->device, &fd_info, &sync_fd);
 		if (ret != VK_SUCCESS) {
-			GXR_ERROR(w, "vkGetFenceFdKHR: %s, falling back to blocking present",
-			          vk_result_string(ret));
+			GXR_ERROR(w, "vkGetFenceFdKHR: %s, falling back to blocking present", vk_result_string(ret));
 			w->use_sync_fd = false;
 			sync_fd = -1;
 		}
@@ -2290,8 +2288,8 @@ gxr_target_present(struct comp_target *ct,
 		         time_ns_to_ms_f(w->stats.period_sum_ns / pc), time_ns_to_ms_f(w->stats.period_min_ns),
 		         time_ns_to_ms_f(w->stats.period_max_ns));
 		if (w->stats.late > 0 || w->stats.dropped > 0) {
-			GXR_WARN(w, "%u of %u frames latched a period late, %u commits dropped to drain",
-			         w->stats.late, w->stats.presents, w->stats.dropped);
+			GXR_WARN(w, "%u of %u frames latched a period late, %u commits dropped to drain", w->stats.late,
+			         w->stats.presents, w->stats.dropped);
 		}
 		w->stats.presents = 0;
 		w->stats.fence_ns = 0;
@@ -2507,7 +2505,9 @@ gxr_target_mark_timing_point(struct comp_target *ct,
 	struct comp_window_galaxyxr *w = (struct comp_window_galaxyxr *)ct;
 
 	switch (point) {
-	case COMP_TARGET_TIMING_POINT_WAKE_UP: u_pc_mark_point(w->upc, U_TIMING_POINT_WAKE_UP, frame_id, when_ns); break;
+	case COMP_TARGET_TIMING_POINT_WAKE_UP:
+		u_pc_mark_point(w->upc, U_TIMING_POINT_WAKE_UP, frame_id, when_ns);
+		break;
 	case COMP_TARGET_TIMING_POINT_BEGIN: u_pc_mark_point(w->upc, U_TIMING_POINT_BEGIN, frame_id, when_ns); break;
 	case COMP_TARGET_TIMING_POINT_SUBMIT_BEGIN:
 		u_pc_mark_point(w->upc, U_TIMING_POINT_SUBMIT_BEGIN, frame_id, when_ns);

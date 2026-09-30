@@ -90,9 +90,7 @@ evdev_bit_is_set(const uint8_t *bits, uint32_t bit)
 }
 
 void
-galaxyxr_hmd_input_init(struct galaxyxr_hmd_input *input,
-                        struct xrt_device *xdev,
-                        enum u_logging_level *log_level)
+galaxyxr_hmd_input_init(struct galaxyxr_hmd_input *input, struct xrt_device *xdev, enum u_logging_level *log_level)
 {
 	input->xdev = xdev;
 	input->log_level = log_level;
