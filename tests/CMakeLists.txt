@@ -43,6 +43,9 @@ endif()
 if(XRT_FEATURE_OPENXR)
 	list(APPEND tests tests_input_transform)
 endif()
+if(XRT_FEATURE_SERVICE)
+	list(APPEND tests tests_ipc_lease)
+endif()
 if(XRT_HAVE_OPENGL
    AND XRT_HAVE_OPENGL_GLX
    AND XRT_HAVE_SDL2
@@ -78,6 +81,9 @@ target_link_libraries(tests_pose PRIVATE aux_math)
 target_link_libraries(tests_quat_change_of_basis PRIVATE aux_math)
 target_link_libraries(tests_quat_swing_twist PRIVATE aux_math)
 target_link_libraries(tests_vec3_angle PRIVATE aux_math)
+if(XRT_FEATURE_SERVICE)
+	target_link_libraries(tests_ipc_lease PRIVATE ipc_server)
+endif()
 
 if(XRT_BUILD_DRIVER_HANDTRACKING)
 	target_link_libraries(
