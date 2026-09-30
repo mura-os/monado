@@ -1685,6 +1685,64 @@ ipc_handle_system_get_controller_state(volatile struct ipc_client_state *_ics, e
 	return XRT_SUCCESS;
 }
 
+xrt_result_t
+ipc_handle_system_add_sandbox_listener(volatile struct ipc_client_state *_ics,
+                                       const struct ipc_client_sandbox_info *info,
+                                       const xrt_ipc_handle_t *handles,
+                                       uint32_t handle_count)
+{
+	struct ipc_server *s = _ics->server;
+
+	// Every handle is ours to close from here on, success or not.
+	xrt_result_t xret = ipc_server_check_controller(_ics, false);
+	if (xret != XRT_SUCCESS) {
+		goto out_close;
+	}
+
+	if (handle_count != 1) {
+		IPC_ERROR(s, "Sandbox listener registration needs exactly one socket, got %u.", handle_count);
+		xret = XRT_ERROR_IPC_FAILURE;
+		goto out_close;
+	}
+
+	if (info->engine[0] == '\0') {
+		IPC_ERROR(s, "Sandbox listener registration needs a sandbox engine name.");
+		xret = XRT_ERROR_IPC_FAILURE;
+		goto out_close;
+	}
+
+#if defined(XRT_OS_LINUX) && !defined(XRT_OS_ANDROID)
+	{
+		// Copy out of volatile storage, the mainloop keeps its own.
+		struct ipc_client_sandbox_info local = *info;
+		// Terminate the strings whatever the client sent.
+		local.engine[sizeof(local.engine) - 1] = '\0';
+		local.app_id[sizeof(local.app_id) - 1] = '\0';
+		local.instance_id[sizeof(local.instance_id) - 1] = '\0';
+
+		os_mutex_lock(&s->global_state.lock);
+		int ret =
+		    ipc_server_mainloop_add_sandbox_listener(&s->ml, handles[0], _ics->server_thread_index, &local);
+		os_mutex_unlock(&s->global_state.lock);
+		if (ret < 0) {
+			xret = XRT_ERROR_IPC_FAILURE;
+			goto out_close;
+		}
+		// The mainloop owns the fd now.
+		return XRT_SUCCESS;
+	}
+#else
+	IPC_ERROR(s, "Sandbox listeners are not supported on this platform.");
+	xret = XRT_ERROR_IPC_FAILURE;
+#endif
+
+out_close:
+	for (uint32_t i = 0; i < handle_count; i++) {
+		xrt_ipc_handle_close(handles[i]);
+	}
+	return xret;
+}
+
 
 /*
  *

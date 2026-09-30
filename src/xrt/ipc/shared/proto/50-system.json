@@ -81,6 +81,13 @@
 		]
 	},
 
+	"system_add_sandbox_listener": {
+		"in": [
+			{"name": "info", "type": "struct ipc_client_sandbox_info"}
+		],
+		"in_handles": {"type": "xrt_ipc_handle_t"}
+	},
+
 	"system_devices_get_list": {
 		"out": [
 			{"name": "device_list", "type": "struct ipc_device_list"}
