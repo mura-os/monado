@@ -26,6 +26,7 @@
 #include "shared/ipc_message_channel.h"
 
 #include "ipc_server_interface.h"
+#include "ipc_server_lease.h"
 
 #include <stdio.h>
 
@@ -73,6 +74,25 @@ struct xrt_body_tracker;
 struct xrt_hand_tracker;
 struct xrt_compositor;
 struct xrt_compositor_native;
+
+/*!
+ * The fixed listening sockets of the service, by the role they admit.
+ *
+ * @ingroup ipc_server
+ */
+enum ipc_listener_kind
+{
+	//! The ordinary service socket (@ref XRT_IPC_MSG_SOCK_FILENAME): apps.
+	IPC_LISTENER_APP = 0,
+
+	//! The control socket (@ref XRT_IPC_MSG_SOCK_CONTROL_FILENAME): controllers.
+	IPC_LISTENER_CONTROL = 1,
+
+	IPC_LISTENER_COUNT,
+};
+
+//! How many sandbox listeners a controller may register at once.
+#define IPC_MAX_SANDBOX_LISTENERS 4
 
 
 /*!
@@ -318,14 +338,42 @@ struct ipc_server_mainloop
 	 * @{
 	 */
 
-	//! Socket that we accept connections on.
-	int listen_socket;
+	/*!
+	 * The sockets we accept connections on, one per @ref ipc_listener_kind.
+	 * Every accept stamps the new client with the listener's role, which is
+	 * where a client's authority comes from (see @ref ipc_client_role).
+	 */
+	struct ipc_listener
+	{
+		//! Listening socket fd, -1 if this listener is not open.
+		int fd;
+
+		//! Role given to every client accepted here.
+		enum ipc_client_role role;
+
+		//! The socket filename we bound to, NULL if systemd passed the fd.
+		char *filename;
+	} listeners[IPC_LISTENER_COUNT];
 
 	//! Were we launched by socket activation, instead of explicitly?
 	bool launched_by_socket;
 
-	//! The socket filename we bound to, if any.
-	char *socket_filename;
+	/*!
+	 * Listening sockets registered at runtime by the controller for
+	 * sandboxed clients (@ref ipc_handle_system_add_sandbox_listener):
+	 * every accept is @ref IPC_CLIENT_ROLE_SANDBOXED_APP with the stored
+	 * sandbox info. Removed when the registering client goes away.
+	 */
+	struct ipc_sandbox_listener
+	{
+		//! Listening socket fd, -1 when the slot is free.
+		int fd;
+
+		//! Server thread index of the controller that registered it.
+		int owner_index;
+
+		struct ipc_client_sandbox_info info;
+	} sandbox_listeners[IPC_MAX_SANDBOX_LISTENERS];
 
 	/*! @} */
 
@@ -378,6 +426,36 @@ ipc_server_mainloop_init(struct ipc_server_mainloop *ml, bool no_stdin);
  */
 void
 ipc_server_mainloop_poll(struct ipc_server *vs, struct ipc_server_mainloop *ml);
+
+#if defined(XRT_OS_LINUX) && !defined(XRT_OS_ANDROID)
+/*!
+ * Register a listening socket whose arrivals are admitted as
+ * @ref IPC_CLIENT_ROLE_SANDBOXED_APP, carrying @p info.
+ *
+ * Called by a client thread holding @ref ipc_server::global_state lock; the
+ * server takes ownership of @p listen_fd. Removed again by
+ * ipc_server_mainloop_remove_sandbox_listeners() when @p owner_index
+ * disconnects.
+ *
+ * @return <0 on error (no free slot, or epoll failure), the fd is then still
+ *         the caller's to close.
+ * @public @memberof ipc_server_mainloop
+ */
+int
+ipc_server_mainloop_add_sandbox_listener(struct ipc_server_mainloop *ml,
+                                         int listen_fd,
+                                         int owner_index,
+                                         const struct ipc_client_sandbox_info *info);
+
+/*!
+ * Close and forget every sandbox listener registered by @p owner_index.
+ *
+ * Called holding @ref ipc_server::global_state lock.
+ * @public @memberof ipc_server_mainloop
+ */
+void
+ipc_server_mainloop_remove_sandbox_listeners(struct ipc_server_mainloop *ml, int owner_index);
+#endif
 
 /*!
  * Main IPC object for the server.
@@ -454,6 +532,9 @@ struct ipc_server
 		// Counter for total number of connected clients
 		uint32_t connected_client_count;
 
+		//! Which controller client (if any) may drive the service.
+		struct ipc_controller_lease lease;
+
 		struct os_mutex lock;
 	} global_state;
 
@@ -488,6 +569,27 @@ ipc_server_init_system_if_available_locked(struct ipc_server *s,
  */
 xrt_result_t
 ipc_server_get_client_app_state(struct ipc_server *s, uint32_t client_id, struct ipc_app_state *out_ias);
+
+/*!
+ * May this client execute a control verb?
+ *
+ * The lease holder always may. With @p legacy_open, any client may while no
+ * controller holds the lease and the `IPC_REQUIRE_CONTROLLER` option is off;
+ * verbs introduced after the lease pass false and are the holder's
+ * unconditionally.
+ *
+ * @return XRT_SUCCESS or XRT_ERROR_IPC_NOT_CONTROLLER; the connection stays.
+ * @ingroup ipc_server
+ */
+xrt_result_t
+ipc_server_check_controller(volatile struct ipc_client_state *ics, bool legacy_open);
+
+/*!
+ * Where this client stands with the controller lease.
+ * @ingroup ipc_server
+ */
+enum ipc_controller_state
+ipc_server_get_controller_state(volatile struct ipc_client_state *ics);
 
 /*!
  * Set the new active client.
@@ -596,12 +698,21 @@ ipc_server_client_destroy_session_and_compositor(volatile struct ipc_client_stat
  * Handles all things needed to be done for a client connecting, like starting
  * it's thread.
  *
+ * The role is decided by the caller from where the connection came from (which
+ * listening socket, or which registered listener) and is the only thing the
+ * client's authority is ever derived from, see @ref ipc_client_role.
+ *
  * @param vs         The IPC server.
  * @param ipc_handle Handle to communicate over.
+ * @param role       How the connection was admitted.
+ * @param sandbox    Sandbox metadata for @ref IPC_CLIENT_ROLE_SANDBOXED_APP, or NULL.
  * @memberof ipc_server
  */
 void
-ipc_server_handle_client_connected(struct ipc_server *vs, xrt_ipc_handle_t ipc_handle);
+ipc_server_handle_client_connected(struct ipc_server *vs,
+                                   xrt_ipc_handle_t ipc_handle,
+                                   enum ipc_client_role role,
+                                   const struct ipc_client_sandbox_info *sandbox);
 
 /*!
  * Perform whatever needs to be done when the mainloop polling encounters a failure.

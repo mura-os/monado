@@ -380,6 +380,72 @@ struct ipc_client_io_blocks
 };
 
 /*!
+ * How a client's connection was admitted. Decided by the server once, when the
+ * connection is accepted, from the path the connection arrived on; a client can
+ * never set or change its own role (@ref ipc_handle_instance_describe_client
+ * writes @ref ipc_app_state::info and @ref ipc_app_state::pid only).
+ *
+ * @ingroup ipc
+ */
+enum ipc_client_role
+{
+	//! Arrived on the ordinary service socket: an OpenXR application.
+	IPC_CLIENT_ROLE_APP = 0,
+
+	/*!
+	 * Arrived on the control socket: a client that may drive the
+	 * system-level verbs (primary client, focus, IO blocking) once it
+	 * holds the controller lease, see @ref ipc_server_lease.
+	 */
+	IPC_CLIENT_ROLE_CONTROLLER = 1,
+
+	/*!
+	 * An application the server knows to be sandboxed: it arrived on a
+	 * listening socket a sandbox engine registered through the controller
+	 * (carrying @ref ipc_client_sandbox_info), or on the ordinary socket
+	 * from a process the server could identify as a Flatpak or snap.
+	 * Never promoted to @ref IPC_CLIENT_ROLE_APP.
+	 */
+	IPC_CLIENT_ROLE_SANDBOXED_APP = 2,
+};
+
+/*!
+ * A client's standing with the controller lease, as returned by
+ * `system_get_controller_state`.
+ *
+ * @ingroup ipc
+ */
+enum ipc_controller_state
+{
+	//! Not a controller, or a controller connected while the lease was held and since dropped.
+	IPC_CONTROLLER_STATE_NONE = 0,
+	//! Holds the lease: control verbs succeed.
+	IPC_CONTROLLER_STATE_HOLDER = 1,
+	//! A controller waiting for the holder to disconnect.
+	IPC_CONTROLLER_STATE_PENDING = 2,
+};
+
+#define IPC_SANDBOX_ENGINE_SIZE 32
+#define IPC_SANDBOX_APP_ID_SIZE 128
+#define IPC_SANDBOX_INSTANCE_ID_SIZE 64
+
+/*!
+ * What the server knows about a sandboxed client, filled by the server at
+ * accept: the sandbox engine ("flatpak", "snap", or whatever a registered
+ * listener declared), the application id and the instance id. Empty strings
+ * where unknown. Informational for controllers (which app is this?), never a
+ * basis for trust.
+ *
+ * @ingroup ipc
+ */
+struct ipc_client_sandbox_info
+{
+	char engine[IPC_SANDBOX_ENGINE_SIZE];
+	char app_id[IPC_SANDBOX_APP_ID_SIZE];
+	char instance_id[IPC_SANDBOX_INSTANCE_ID_SIZE];
+};
+
+/*!
  * State for a connected application.
  *
  * @ingroup ipc
@@ -396,8 +462,20 @@ struct ipc_app_state
 	bool session_overlay;
 	struct ipc_client_io_blocks io_blocks;
 	uint32_t z_order;
+
+	/*!
+	 * The pid the client reported about itself in
+	 * @ref ipc_client_description. Informational only: the server does not
+	 * verify it and nothing may be decided on it.
+	 */
 	pid_t pid;
 	struct xrt_application_info info;
+
+	//! Server-assigned at accept, see @ref ipc_client_role.
+	enum ipc_client_role role;
+
+	//! Valid when @ref role is @ref IPC_CLIENT_ROLE_SANDBOXED_APP.
+	struct ipc_client_sandbox_info sandbox;
 };
 
 /*!

@@ -113,7 +113,7 @@ class Arg:
                         "bool",
                         "float"))
     AGGREGATE_RE = re.compile(r"((const )?struct|union) (xrt|ipc)_[a-z_]+")
-    ENUM_RE = re.compile(r"enum xrt_[a-z_]+")
+    ENUM_RE = re.compile(r"enum (xrt|ipc)_[a-z_]+")
 
     @classmethod
     def parse_array(cls, a):

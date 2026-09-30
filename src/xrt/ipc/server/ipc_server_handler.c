@@ -339,6 +339,8 @@ xrt_result_t
 ipc_handle_instance_describe_client(volatile struct ipc_client_state *ics,
                                     const struct ipc_client_description *client_desc)
 {
+	// Only what the client says about itself; the role and sandbox info are
+	// the server's (set at accept) and are deliberately not written here.
 	ics->client_state.info = client_desc->info;
 	ics->client_state.pid = client_desc->pid;
 
@@ -353,7 +355,16 @@ ipc_handle_instance_describe_client(volatile struct ipc_client_state *ics,
 	P("Client info:");
 	PNT("id: %u", ics->client_state.id);
 	PNT("application_name: '%s'", client_desc->info.application_name);
-	PNT("pid: " PID_T_FMT, client_desc->pid);
+	PNT("pid: " PID_T_FMT " (as reported by the client)", client_desc->pid);
+	PNT("role: %s", ics->client_state.role == IPC_CLIENT_ROLE_CONTROLLER      ? "controller"
+	                : ics->client_state.role == IPC_CLIENT_ROLE_SANDBOXED_APP ? "sandboxed app"
+	                                                                          : "app");
+	if (ics->client_state.role == IPC_CLIENT_ROLE_SANDBOXED_APP) {
+		// Cast away volatile for printing only.
+		const struct ipc_client_sandbox_info *sb =
+		    (const struct ipc_client_sandbox_info *)&ics->client_state.sandbox;
+		PNT("sandbox: engine='%s' app_id='%s' instance_id='%s'", sb->engine, sb->app_id, sb->instance_id);
+	}
 	PNT("extensions:");
 
 	EXT(ext_hand_tracking_enabled);
@@ -1564,6 +1575,11 @@ ipc_handle_system_set_primary_client(volatile struct ipc_client_state *_ics, uin
 {
 	struct ipc_server *s = _ics->server;
 
+	xrt_result_t xret = ipc_server_check_controller(_ics, true);
+	if (xret != XRT_SUCCESS) {
+		return xret;
+	}
+
 	IPC_INFO(s, "System setting active client to %d.", client_id);
 
 	return ipc_server_set_active_client(s, client_id);
@@ -1572,6 +1588,11 @@ ipc_handle_system_set_primary_client(volatile struct ipc_client_state *_ics, uin
 xrt_result_t
 ipc_handle_system_set_focused_client(volatile struct ipc_client_state *ics, uint32_t client_id)
 {
+	xrt_result_t xret = ipc_server_check_controller(ics, true);
+	if (xret != XRT_SUCCESS) {
+		return xret;
+	}
+
 	IPC_INFO(ics->server, "UNIMPLEMENTED: system setting focused client to %d.", client_id);
 
 	return XRT_SUCCESS;
@@ -1581,6 +1602,11 @@ xrt_result_t
 ipc_handle_system_toggle_io_client(volatile struct ipc_client_state *_ics, uint32_t client_id)
 {
 	struct ipc_server *s = _ics->server;
+
+	xrt_result_t xret = ipc_server_check_controller(_ics, true);
+	if (xret != XRT_SUCCESS) {
+		return xret;
+	}
 
 	IPC_DEBUG(s, "System toggling io for client %u.", client_id);
 
@@ -1593,6 +1619,11 @@ ipc_handle_system_set_client_io_blocks(volatile struct ipc_client_state *_ics,
                                        const struct ipc_client_io_blocks *blocks)
 {
 	struct ipc_server *s = _ics->server;
+
+	xrt_result_t xret = ipc_server_check_controller(_ics, true);
+	if (xret != XRT_SUCCESS) {
+		return xret;
+	}
 
 	IPC_DEBUG(s,
 	          "System setting io blocks for client %u. (block_poses=%s block_hand_tracking=%s block_inputs=%s "
@@ -1637,7 +1668,21 @@ ipc_handle_system_set_client_recommended_view_config(volatile struct ipc_client_
 {
 	struct ipc_server *s = _ics->server;
 
+	// Introduced after the lease: the holder's unconditionally.
+	xrt_result_t xret = ipc_server_check_controller(_ics, false);
+	if (xret != XRT_SUCCESS) {
+		return xret;
+	}
+
 	return ipc_server_set_client_recommended_view_config(s, client_id, view_type, recommended_view_config);
+}
+
+xrt_result_t
+ipc_handle_system_get_controller_state(volatile struct ipc_client_state *_ics, enum ipc_controller_state *out_state)
+{
+	*out_state = ipc_server_get_controller_state(_ics);
+
+	return XRT_SUCCESS;
 }
 
 

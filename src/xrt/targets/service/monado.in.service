@@ -3,7 +3,7 @@
 
 [Unit]
 Description=Monado XR runtime service module @extra_desc@
-Requires=%N.socket
+Requires=%N.socket %N-control.socket
 ConditionUser=!root
 Conflicts=@conflicts@.service
 
@@ -15,4 +15,4 @@ Environment="XRT_COMPOSITOR_LOG=debug" "XRT_PRINT_OPTIONS=on" "IPC_EXIT_ON_DISCO
 Restart=no
 
 [Install]
-Also=%N.socket
+Also=%N.socket %N-control.socket

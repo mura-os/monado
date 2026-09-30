@@ -60,6 +60,13 @@
  */
 
 DEBUG_GET_ONCE_BOOL_OPTION(exit_when_idle, "IPC_EXIT_WHEN_IDLE", false)
+/*
+ * "IPC_REQUIRE_CONTROLLER": when false (the default) the legacy control verbs
+ * stay callable from any connection *while no controller holds the lease*, so
+ * an unmodified `monado-ctl` on the application socket keeps working. When
+ * true they are the lease holder's from the start.
+ */
+DEBUG_GET_ONCE_BOOL_OPTION(require_controller, "IPC_REQUIRE_CONTROLLER", false)
 DEBUG_GET_ONCE_NUM_OPTION(exit_when_idle_delay_ms, "IPC_EXIT_WHEN_IDLE_DELAY_MS", 5000)
 DEBUG_GET_ONCE_LOG_OPTION(ipc_log, "IPC_LOG", U_LOGGING_INFO)
 
@@ -360,6 +367,7 @@ init_server_state(struct ipc_server *s)
 	s->global_state.active_client_index = -1; // we start off with no active client.
 	s->global_state.last_active_client_index = -1;
 	s->global_state.connected_client_count = 0; // No clients connected initially
+	ipc_controller_lease_init(&s->global_state.lease);
 	s->current_slot_index = 0;
 
 	for (uint32_t i = 0; i < IPC_MAX_CLIENTS; i++) {
@@ -954,6 +962,48 @@ ipc_server_get_client_app_state(struct ipc_server *s, uint32_t client_id, struct
 }
 
 xrt_result_t
+ipc_server_check_controller(volatile struct ipc_client_state *ics, bool legacy_open)
+{
+	struct ipc_server *s = ics->server;
+	xrt_result_t xret = XRT_ERROR_IPC_NOT_CONTROLLER;
+
+	os_mutex_lock(&s->global_state.lock);
+	if (ipc_controller_lease_is_holder(&s->global_state.lease, ics->server_thread_index)) {
+		xret = XRT_SUCCESS;
+	} else if (legacy_open && !debug_get_bool_option_require_controller() &&
+	           s->global_state.lease.holder_index < 0) {
+		// Nobody holds the lease and the deployment did not ask us to
+		// insist on one: today's behaviour for upstream users.
+		xret = XRT_SUCCESS;
+	}
+	os_mutex_unlock(&s->global_state.lock);
+
+	if (xret != XRT_SUCCESS) {
+		IPC_DEBUG(s, "Client %u (role %u) is not the controller, refusing control verb.", ics->client_state.id,
+		          (uint32_t)ics->client_state.role);
+	}
+
+	return xret;
+}
+
+enum ipc_controller_state
+ipc_server_get_controller_state(volatile struct ipc_client_state *ics)
+{
+	struct ipc_server *s = ics->server;
+	enum ipc_controller_state state = IPC_CONTROLLER_STATE_NONE;
+
+	os_mutex_lock(&s->global_state.lock);
+	if (ipc_controller_lease_is_holder(&s->global_state.lease, ics->server_thread_index)) {
+		state = IPC_CONTROLLER_STATE_HOLDER;
+	} else if (ipc_controller_lease_is_pending(&s->global_state.lease, ics->server_thread_index)) {
+		state = IPC_CONTROLLER_STATE_PENDING;
+	}
+	os_mutex_unlock(&s->global_state.lock);
+
+	return state;
+}
+
+xrt_result_t
 ipc_server_set_active_client(struct ipc_server *s, uint32_t client_id)
 {
 	os_mutex_lock(&s->global_state.lock);
@@ -1094,7 +1144,10 @@ ipc_server_handle_shutdown_signal(struct ipc_server *vs)
 }
 
 void
-ipc_server_handle_client_connected(struct ipc_server *vs, xrt_ipc_handle_t ipc_handle)
+ipc_server_handle_client_connected(struct ipc_server *vs,
+                                   xrt_ipc_handle_t ipc_handle,
+                                   enum ipc_client_role role,
+                                   const struct ipc_client_sandbox_info *sandbox)
 {
 	volatile struct ipc_client_state *ics = NULL;
 	int32_t cs_index = -1;
@@ -1161,6 +1214,18 @@ ipc_server_handle_client_connected(struct ipc_server *vs, xrt_ipc_handle_t ipc_h
 	ics->server = vs;
 	ics->server_thread_index = cs_index;
 
+	// The role is the server's decision about this connection and is set
+	// exactly here; the client-facing describe call never touches it.
+	ics->client_state.role = role;
+	if (role == IPC_CLIENT_ROLE_SANDBOXED_APP && sandbox != NULL) {
+		// Cast away volatile for the copy, we hold the lock.
+		memcpy((void *)&ics->client_state.sandbox, sandbox, sizeof(*sandbox));
+	}
+	U_LOG_D("Client %u connected with role %s", id,
+	        role == IPC_CLIENT_ROLE_CONTROLLER      ? "controller"
+	        : role == IPC_CLIENT_ROLE_SANDBOXED_APP ? "sandboxed app"
+	                                                : "app");
+
 	ics->plane_detection_size = 0;
 	ics->plane_detection_count = 0;
 	ics->plane_detection_ids = NULL;
@@ -1174,6 +1239,13 @@ ipc_server_handle_client_connected(struct ipc_server *vs, xrt_ipc_handle_t ipc_h
 
 		U_LOG_E("Failed to allocate shared memory!");
 		return;
+	}
+
+	// Controllers take or queue for the lease; other roles are ignored.
+	if (ipc_controller_lease_on_connect(&vs->global_state.lease, (int)cs_index, role)) {
+		U_LOG_I("Client %u is now the controller", id);
+	} else if (role == IPC_CLIENT_ROLE_CONTROLLER) {
+		U_LOG_I("Client %u is a pending controller (%u ahead)", id, vs->global_state.lease.pending_count);
 	}
 
 	os_thread_start(&it->thread, ipc_server_client_thread, (void *)ics);

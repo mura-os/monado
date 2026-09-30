@@ -147,6 +147,8 @@ add_library(
 	server/ipc_server_process.c
 	server/ipc_server_objects.c
 	server/ipc_server_objects.h
+	server/ipc_server_lease.c
+	server/ipc_server_lease.h
 	)
 target_include_directories(
 	ipc_server
@@ -183,6 +185,8 @@ if(ANDROID)
 elseif(XRT_HAVE_LINUX)
 	target_sources(
 		ipc_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/server/ipc_server_mainloop_linux.c
+				   ${CMAKE_CURRENT_SOURCE_DIR}/server/ipc_server_peer.c
+				   ${CMAKE_CURRENT_SOURCE_DIR}/server/ipc_server_peer.h
 		)
 elseif(WIN32)
 	target_sources(

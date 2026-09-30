@@ -105,6 +105,22 @@ common_shutdown(volatile struct ipc_client_state *ics)
 	ipc_shmem_destroy((xrt_shmem_handle_t *)&ics->ism_handle, (void **)&ics->server->isms[ics->server_thread_index],
 	                  sizeof(struct ipc_shared_memory));
 
+	// Release or leave the controller lease; promote the next in line.
+	int promoted = -1;
+	if (ipc_controller_lease_on_disconnect(&ics->server->global_state.lease, ics->server_thread_index, &promoted)) {
+		if (promoted >= 0) {
+			U_LOG_I("Client %u released the controller lease, client %u promoted", ics->client_state.id,
+			        ics->server->threads[promoted].ics.client_state.id);
+		} else {
+			U_LOG_I("Client %u released the controller lease, no controller", ics->client_state.id);
+		}
+	}
+
+#if defined(XRT_OS_LINUX) && !defined(XRT_OS_ANDROID)
+	// Any sandbox listeners this client registered go with it.
+	ipc_server_mainloop_remove_sandbox_listeners(&ics->server->ml, ics->server_thread_index);
+#endif
+
 	ics->server->threads[ics->server_thread_index].state = IPC_THREAD_STOPPING;
 	ics->server_thread_index = -1;
 	memset((void *)&ics->client_state, 0, sizeof(struct ipc_app_state));

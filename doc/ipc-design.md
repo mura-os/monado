@@ -52,6 +52,65 @@ descriptor to the client, so it has (read) access to this data.
 
 [accept]: https://man7.org/linux/man-pages/man2/accept.2.html
 
+### Client roles and the controller lease
+
+The service listens on two well-known sockets, not one. Ordinary clients (the
+OpenXR client library) connect to `monado_comp_ipc`; a session controller (a
+shell, `monado-ctl`, anything using `libmonado` on `MND_SOCKET_CONTROL`)
+connects to `monado_comp_ipc_control`. **Which socket a connection arrives on is
+its identity to the service.** At `accept()` the service stamps the new client
+with an `ipc_client_role`:
+
+- `IPC_CLIENT_ROLE_APP` — arrived on the application socket.
+- `IPC_CLIENT_ROLE_CONTROLLER` — arrived on the control socket.
+- `IPC_CLIENT_ROLE_SANDBOXED_APP` — arrived on a listener a controller
+  registered with `system_add_sandbox_listener`, *or* arrived on the
+  application socket but was found to be running inside a Flatpak or Snap
+  (`/proc/<pid>/root/.flatpak-info`, or a systemd user unit named
+  `app-flatpak-*`/`snap.*`, looked up through `SO_PEERPIDFD` where available).
+  This lookup can only ever lower a client; nothing raises one to controller.
+
+The role is never sent by the client and `instance_describe_client` never
+touches it. Under systemd the two sockets are separate units
+(`monado.socket`, `monado-control.socket`) passed to the service with
+`FileDescriptorName=app`/`control`; a single unnamed fd is treated as the
+application socket, so older unit files keep working. When started by hand the
+service binds both sockets itself, and a deployment that wants to restrict who
+may reach the control socket does so with the ordinary Unix means —
+directory permissions, the socket unit's `SocketMode=`/`SocketUser=`, or a
+sandbox that does not mount the runtime directory.
+
+Same-uid clients cannot be told apart by credentials, so this is not an
+authentication scheme; it is the same split PipeWire (manager vs. client
+socket), seatd (VT vs. non-VT) and Wayland compositors (`wp_security_context_v1`
+listeners) use: **the arrival path is the identity, the runtime enforces, and
+policy lives in the controller.**
+
+Among controllers there is one **lease**. The first controller to connect holds
+it; later controllers queue in arrival order and are promoted when the holder
+disconnects; a holder is never displaced; nothing is persisted, so a restarted
+controller finds the service exactly as its verbs left it. The control verbs —
+`system_set_primary_client`, `system_set_focused_client`,
+`system_toggle_io_client`, `system_set_client_io_blocks`,
+`system_set_client_recommended_view_config`, `system_add_sandbox_listener` —
+succeed only for the holder; every other connection gets
+`XRT_ERROR_IPC_NOT_CONTROLLER` (libmonado: `MND_ERROR_NOT_CONTROLLER`) and
+stays connected. Read-only enumeration (`system_get_clients`,
+`system_get_client_info`, `system_get_controller_state`) is open to every role.
+
+For compatibility, the four verbs that predate the lease remain callable from
+any connection *while no controller holds the lease*, unless the service runs
+with `IPC_REQUIRE_CONTROLLER=true`. That keeps an unmodified `monado-ctl` on the
+application socket working for existing users; a deployment with a shell that
+owns the session sets the option and the verbs are the holder's from first boot.
+Verbs added after the lease are the holder's unconditionally. A controller
+learns whether it holds or is pending by calling `system_get_controller_state`
+(`mnd_root_get_controller_state`); there is no push event.
+
+The lease itself is a small pure state machine (`ipc_server_lease.h`) driven
+under `global_state.lock` from the connect and disconnect paths; it has no
+knowledge of sockets or threads and is unit-tested on its own.
+
 ## Android Platform Details
 
 On Android, to pass platform objects, allow for service activation, and

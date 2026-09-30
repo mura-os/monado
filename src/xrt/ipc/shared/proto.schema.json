@@ -27,7 +27,7 @@
             "$comment": "Must keep this list synchronized with the one in ipcproto/common.py",
             "title": "Custom enum (scalar)",
             "type": "string",
-            "pattern": "enum xrt_[a-z_]+"
+            "pattern": "enum (xrt|ipc)_[a-z_]+"
         },
         "handle": {
             "$comment": "Must keep this pattern synchronized with the one in ipcproto/common.py",

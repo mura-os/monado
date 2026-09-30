@@ -94,8 +94,9 @@ handle_listen(struct ipc_server *vs, struct ipc_server_mainloop *ml)
 		// Release the thread that gave us this fd.
 		ml->last_accepted_fd = newfd;
 
-		// Call into the generic client connected handling code.
-		ipc_server_handle_client_connected(vs, newfd);
+		// Call into the generic client connected handling code. The fd
+		// came from a client-created socketpair over Binder: an app.
+		ipc_server_handle_client_connected(vs, newfd, IPC_CLIENT_ROLE_APP, NULL);
 
 		// If we are waiting to shutdown, wake that thread up.
 		pthread_cond_broadcast(&ml->accept_cond);

@@ -272,4 +272,10 @@ typedef enum xrt_result
 	 * The IPC client did not create a system yet, which is required for this function.
 	 */
 	XRT_ERROR_IPC_SYSTEM_NOT_CREATED = -45,
+
+	/*!
+	 * The IPC client does not hold the controller lease, which this
+	 * function requires. The connection stays open.
+	 */
+	XRT_ERROR_IPC_NOT_CONTROLLER = -46,
 } xrt_result_t;

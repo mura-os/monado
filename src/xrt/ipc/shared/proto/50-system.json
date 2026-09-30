@@ -75,6 +75,12 @@
 		]
 	},
 
+	"system_get_controller_state": {
+		"out": [
+			{"name": "state", "type": "enum ipc_controller_state"}
+		]
+	},
+
 	"system_devices_get_list": {
 		"out": [
 			{"name": "device_list", "type": "struct ipc_device_list"}

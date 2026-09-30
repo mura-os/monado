@@ -20,6 +20,7 @@ install(TARGETS monado-service RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 if(XRT_HAVE_SYSTEMD)
 	set(SERVICE_INPUT "${CMAKE_CURRENT_SOURCE_DIR}/monado.in.service")
 	set(SOCKET_INPUT "${CMAKE_CURRENT_SOURCE_DIR}/monado.in.socket")
+	set(CONTROL_SOCKET_INPUT "${CMAKE_CURRENT_SOURCE_DIR}/monado-control.in.socket")
 	###
 	# Generate systemd unit files with absolute path to service
 	# intended for development without installing
@@ -29,6 +30,9 @@ if(XRT_HAVE_SYSTEMD)
 	set(exit_on_disconnect ON)
 	set(extra_desc "in build tree")
 	configure_file(${SOCKET_INPUT} "${CMAKE_CURRENT_BINARY_DIR}/${UNIT_NAME}.socket")
+	configure_file(
+		${CONTROL_SOCKET_INPUT} "${CMAKE_CURRENT_BINARY_DIR}/${UNIT_NAME}-control.socket" @ONLY
+		)
 
 	# Need this step because file(GENERATE) only evaluates generator expressions,
 	# and not what configure_file does.
@@ -47,11 +51,12 @@ if(XRT_HAVE_SYSTEMD)
 	add_custom_target(
 		link-systemd-dev-units
 		COMMAND systemctl --user link "${CMAKE_CURRENT_BINARY_DIR}/${UNIT_NAME}.socket"
+		COMMAND systemctl --user link "${CMAKE_CURRENT_BINARY_DIR}/${UNIT_NAME}-control.socket"
 		COMMAND systemctl --user link "${CMAKE_CURRENT_BINARY_DIR}/${UNIT_NAME}.service"
 		COMMAND systemctl --user daemon-reload
 		VERBATIM
 		COMMENT
-			"Linking monado-dev.{socket,service} into your local systemd unit directory."
+			"Linking monado-dev.{socket,-control.socket,service} into your local systemd unit directory."
 		)
 endif()
 

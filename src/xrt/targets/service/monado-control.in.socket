@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: BSL-1.0
+# SPDX-FileCopyrightText: 2020, Collabora, Ltd.
+
+# The control socket: clients accepted here are controllers (ipc_client_role),
+# the role that may hold the controller lease and drive the system verbs.
+# Same service as the ordinary socket; systemd hands both fds over by name.
+
+[Unit]
+Description=Monado XR service module control socket @extra_desc@
+ConditionUser=!root
+Conflicts=@conflicts@-control.socket
+
+[Socket]
+ListenStream=%t/@XRT_IPC_MSG_SOCK_CONTROL_FILENAME@
+FileDescriptorName=control
+Service=@UNIT_NAME@.service
+RemoveOnStop=true
+FlushPending=true
+
+[Install]
+WantedBy=sockets.target
