@@ -7,15 +7,25 @@
  * The Galaxy XR eye panels are two separate DRM devices, one DSI connector
  * each, and a single panel can only be fed by ganging four 888 pixel wide
  * SSPP slices side by side. Vulkan display WSI cannot express any of that, so
- * this target leases both DSI connectors from the Wayland compositor
- * (drm-lease-v1, one lease per DRM device), renders into shared stereo
+ * this target takes one DRM fd per panel, renders into shared stereo
  * dma-bufs imported into Vulkan as linear DRM-format-modifier images, and
- * scans them out with atomic commits on the two lease fds.
+ * scans them out with atomic commits on the two fds.
+ *
+ * The two fds come from one of two paths; everything after acquisition is
+ * the same:
+ *  - direct: open the DRM nodes ourselves and be their DRM master (the
+ *    appliance shape: the runtime owns the panels, there is no compositor
+ *    below it). Nodes from XRT_COMPOSITOR_GALAXYXR_DRM_DEVICES (colon
+ *    separated), or every /dev/dri/card* when that is "auto".
+ *  - lease: lease both DSI connectors from a Wayland compositor
+ *    (drm-lease-v1, one lease per DRM device). Chosen when the option is
+ *    unset and WAYLAND_DISPLAY is set.
  *
  * Buffer layout is one 7104x3840 image: x 0..3551 left eye (DSI-1/primary),
  * x 3552..7103 right eye (DSI-2/secondary).
  *
  * @author Stanislav Aleksandrov <lightofmysoul@bringo.com>
+ * @author Mura contributors
  * @ingroup comp_main
  */
 
@@ -68,6 +78,12 @@ DEBUG_GET_ONCE_BOOL_OPTION(gxr_sync_fd, "XRT_COMPOSITOR_GALAXYXR_SYNC_FD", true)
 DEBUG_GET_ONCE_BOOL_OPTION(gxr_ubwc, "XRT_COMPOSITOR_GALAXYXR_UBWC", true)
 // The panels expose 3552x3840 at 90, 72 and 60 Hz.
 DEBUG_GET_ONCE_NUM_OPTION(gxr_hz, "XRT_COMPOSITOR_GALAXYXR_HZ", 90)
+/*
+ * DRM nodes to open directly (colon separated), or "auto" to scan
+ * /dev/dri/card*. Unset: direct "auto" when no Wayland display is reachable
+ * (WAYLAND_DISPLAY unset), the drm-lease path otherwise.
+ */
+DEBUG_GET_ONCE_OPTION(gxr_drm_devices, "XRT_COMPOSITOR_GALAXYXR_DRM_DEVICES", NULL)
 
 #define GXR_ERROR(w, ...) COMP_ERROR((w)->base.c, __VA_ARGS__)
 #define GXR_WARN(w, ...) COMP_WARN((w)->base.c, __VA_ARGS__)
@@ -824,7 +840,184 @@ gxr_acquire_leases(struct comp_window_galaxyxr *w)
 
 /*
  *
- * Eye (leased DRM device) setup and scanout.
+ * Direct DRM open (no compositor below us).
+ *
+ */
+
+// Sysfs path of the device behind an open DRM fd, same source the lease
+// path reads from the lessor's fd (see _dev_drm_fd).
+static void
+gxr_fd_sysfs(int fd, char *out, size_t out_size)
+{
+	out[0] = '\0';
+	struct stat st;
+	if (fstat(fd, &st) != 0) {
+		return;
+	}
+	char link[64];
+	snprintf(link, sizeof(link), "/sys/dev/char/%u:%u", major(st.st_rdev), minor(st.st_rdev));
+	ssize_t n = readlink(link, out, out_size - 1);
+	if (n > 0) {
+		out[n] = '\0';
+	}
+}
+
+/*
+ * Inspect one DRM node: does it carry a connected DSI panel, what is the
+ * connector called, and which eye is it (same rule as gxr_dev_is_left: the
+ * left panel hangs off the ae00000 MDSS, the one that also has the non-DSI
+ * connectors). Returns false when the node is not a panel device.
+ */
+static bool
+gxr_probe_node(struct comp_window_galaxyxr *w, const char *path, int fd, struct gxr_eye *eye)
+{
+	drmModeRes *res = drmModeGetResources(fd);
+	if (res == NULL) {
+		GXR_DEBUG(w, "%s: not a KMS device (%s)", path, strerror(errno));
+		return false;
+	}
+
+	bool has_dsi = false, has_other = false;
+	for (int i = 0; i < res->count_connectors; i++) {
+		drmModeConnector *c = drmModeGetConnector(fd, res->connectors[i]);
+		if (c == NULL) {
+			continue;
+		}
+		if (c->connector_type == DRM_MODE_CONNECTOR_DSI) {
+			if (!has_dsi && c->connection == DRM_MODE_CONNECTED && c->count_modes > 0) {
+				has_dsi = true;
+				snprintf(eye->wl_name, sizeof(eye->wl_name), "DSI-%u", c->connector_type_id);
+			}
+		} else {
+			has_other = true;
+		}
+		drmModeFreeConnector(c);
+	}
+	drmModeFreeResources(res);
+
+	if (!has_dsi) {
+		GXR_DEBUG(w, "%s: no connected DSI connector", path);
+		return false;
+	}
+
+	char sysfs[256];
+	gxr_fd_sysfs(fd, sysfs, sizeof(sysfs));
+
+	const char *why;
+	if (strstr(sysfs, "ae00000") != NULL) {
+		eye->is_left = true;
+		why = "device path ae00000";
+	} else if (strstr(sysfs, "15600000") != NULL) {
+		eye->is_left = false;
+		why = "device path 15600000";
+	} else {
+		eye->is_left = has_other;
+		why = "non-DSI connector presence";
+	}
+
+	GXR_INFO(w, "%s is the %s eye (%s), device %s %s", eye->wl_name, eye->is_left ? "left" : "right", why,
+	         path, sysfs[0] != '\0' ? sysfs : "<unknown>");
+	return true;
+}
+
+/*
+ * Open the panel DRM devices ourselves. The DRM core makes the first opener
+ * of a node its master (drm_open -> drm_master_open), which is what atomic
+ * commits need; access to the nodes is the seat's business (udev uaccess on
+ * card*), not ours.
+ */
+static bool
+gxr_open_direct(struct comp_window_galaxyxr *w, const char *spec)
+{
+	char paths[GXR_MAX_DEVS][64];
+	uint32_t npaths = 0;
+
+	if (strcmp(spec, "auto") == 0) {
+		for (uint32_t i = 0; i < GXR_MAX_DEVS * 4 && npaths < GXR_MAX_DEVS; i++) {
+			char p[64];
+			snprintf(p, sizeof(p), "/dev/dri/card%u", i);
+			if (access(p, F_OK) == 0) {
+				snprintf(paths[npaths++], sizeof(paths[0]), "%s", p);
+			}
+		}
+	} else {
+		const char *s = spec;
+		while (*s != '\0' && npaths < GXR_MAX_DEVS) {
+			const char *e = strchr(s, ':');
+			size_t len = e != NULL ? (size_t)(e - s) : strlen(s);
+			if (len > 0 && len < sizeof(paths[0])) {
+				memcpy(paths[npaths], s, len);
+				paths[npaths][len] = '\0';
+				npaths++;
+			}
+			s = e != NULL ? e + 1 : s + len;
+		}
+	}
+
+	if (npaths == 0) {
+		GXR_ERROR(w, "No DRM nodes to open (XRT_COMPOSITOR_GALAXYXR_DRM_DEVICES=%s)", spec);
+		return false;
+	}
+
+	uint32_t neyes = 0;
+	for (uint32_t i = 0; i < npaths && neyes < 2; i++) {
+		int fd = open(paths[i], O_RDWR | O_CLOEXEC);
+		if (fd < 0) {
+			GXR_WARN(w, "%s: open failed: %s", paths[i], strerror(errno));
+			continue;
+		}
+		struct gxr_eye *eye = &w->eyes[neyes];
+		if (!gxr_probe_node(w, paths[i], fd, eye)) {
+			close(fd);
+			continue;
+		}
+		eye->fd = fd;
+		neyes++;
+	}
+
+	if (neyes != 2) {
+		GXR_ERROR(w, "Expected the two DSI panels on two DRM devices, opened %u", neyes);
+		return false;
+	}
+
+	return true;
+}
+
+static bool
+gxr_acquire_fds(struct comp_window_galaxyxr *w)
+{
+	const char *spec = debug_get_option_gxr_drm_devices();
+	if (spec == NULL && getenv("WAYLAND_DISPLAY") == NULL) {
+		spec = "auto";
+	}
+
+	if (spec != NULL) {
+		GXR_INFO(w, "Opening the panels directly (%s)", spec);
+		return gxr_open_direct(w, spec);
+	}
+
+	w->display = wl_display_connect(NULL);
+	if (w->display == NULL) {
+		GXR_ERROR(w, "Failed to connect to Wayland display (set WAYLAND_DISPLAY, run as the compositor user)");
+		return false;
+	}
+
+	w->registry = wl_display_get_registry(w->display);
+	wl_registry_add_listener(w->registry, &registry_listener, w);
+	wl_display_roundtrip(w->display);
+
+	if (w->dev_count == 0) {
+		GXR_ERROR(w, "Compositor does not advertise wp_drm_lease_device_v1");
+		return false;
+	}
+
+	return gxr_acquire_leases(w);
+}
+
+
+/*
+ *
+ * Eye (DRM device fd) setup and scanout.
  *
  */
 
@@ -837,7 +1030,7 @@ gxr_eye_setup(struct comp_window_galaxyxr *w, struct gxr_eye *eye)
 
 	drmModeRes *res = drmModeGetResources(eye->fd);
 	if (res == NULL) {
-		GXR_ERROR(w, "[%s] getting resources on lease fd failed: %s", eye->wl_name, strerror(errno));
+		GXR_ERROR(w, "[%s] getting resources failed: %s", eye->wl_name, strerror(errno));
 		return false;
 	}
 
@@ -854,7 +1047,7 @@ gxr_eye_setup(struct comp_window_galaxyxr *w, struct gxr_eye *eye)
 		}
 	}
 	if (conn == NULL) {
-		GXR_ERROR(w, "[%s] no connected DSI connector in the lease", eye->wl_name);
+		GXR_ERROR(w, "[%s] no connected DSI connector on the fd", eye->wl_name);
 		drmModeFreeResources(res);
 		return false;
 	}
@@ -886,13 +1079,13 @@ gxr_eye_setup(struct comp_window_galaxyxr *w, struct gxr_eye *eye)
 	drmModeFreeResources(res);
 
 	if (eye->crtc == 0) {
-		GXR_ERROR(w, "[%s] no usable CRTC in the lease", eye->name);
+		GXR_ERROR(w, "[%s] no usable CRTC on the fd", eye->name);
 		return false;
 	}
 
 	drmModePlaneRes *pr = drmModeGetPlaneResources(eye->fd);
 	if (pr == NULL) {
-		GXR_ERROR(w, "[%s] getting planes on lease fd failed: %s", eye->name, strerror(errno));
+		GXR_ERROR(w, "[%s] getting planes failed: %s", eye->name, strerror(errno));
 		return false;
 	}
 
@@ -911,7 +1104,7 @@ gxr_eye_setup(struct comp_window_galaxyxr *w, struct gxr_eye *eye)
 	drmModeFreePlaneResources(pr);
 
 	if (ncand < GXR_NPLANES) {
-		GXR_ERROR(w, "[%s] lease grants %u planes, only %u usable, need %d", eye->name, nleased, ncand,
+		GXR_ERROR(w, "[%s] fd exposes %u planes, only %u usable, need %d", eye->name, nleased, ncand,
 		          GXR_NPLANES);
 		return false;
 	}
@@ -1899,22 +2092,7 @@ gxr_target_init_pre_vulkan(struct comp_target *ct)
 {
 	struct comp_window_galaxyxr *w = (struct comp_window_galaxyxr *)ct;
 
-	w->display = wl_display_connect(NULL);
-	if (w->display == NULL) {
-		GXR_ERROR(w, "Failed to connect to Wayland display (set WAYLAND_DISPLAY, run as the compositor user)");
-		return false;
-	}
-
-	w->registry = wl_display_get_registry(w->display);
-	wl_registry_add_listener(w->registry, &registry_listener, w);
-	wl_display_roundtrip(w->display);
-
-	if (w->dev_count == 0) {
-		GXR_ERROR(w, "Compositor does not advertise wp_drm_lease_device_v1");
-		return false;
-	}
-
-	if (!gxr_acquire_leases(w)) {
+	if (!gxr_acquire_fds(w)) {
 		return false;
 	}
 
@@ -2635,7 +2813,7 @@ gxr_target_destroy(struct comp_target *ct)
 	gxr_wait_flips(w, 100);
 
 	if (w->modeset_done) {
-		GXR_INFO(w, "Disabling panels and returning the leases");
+		GXR_INFO(w, "Disabling panels and closing the DRM fds");
 		gxr_eye_disable(w, w->left);
 		gxr_eye_disable(w, w->right);
 	}
